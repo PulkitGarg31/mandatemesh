@@ -3728,3 +3728,12 @@ Task 1 12 · Task 2 10 · Task 3 3 · Task 4 3 · Task 5 5 · Task 6 25 · Task 
 - Test totals (supersede Amendment 4): after Task 10 **95**; after Task 12 **100**. README test count: 100.
 - Task 10 change: before calling `_decide` for a cart, the orchestrator checks `ledger.of_type("payment.captured")` for the same `cart_id` and, if found, records `gate.replay_refused` and returns `RunResult("denied", ...)` without evaluating. (Within one run this cannot trigger; it is the cross-run replay guard the docs promise.)
 - Docs (Task 14): state that a valid step-up token covers both caps for that one cart, that `approved_total_paise` is an upper bound, and that replay protection is ledger + TTL, not the gate.
+
+---
+
+## Amendment 6 (2026-09-03, after Task 7 review)
+
+- `ledger.py`: `append` deep-normalises the payload (`json.loads(json.dumps(payload))`) and creates the parent directory; `__init__` has no side effects and stops loading at the first unparsable line, which `verify()` reports as `(False, <position>)`; `verify()` reports the line position and also fails on a `seq` mismatch; `receipt()` matches related events on whole `payment_id`/`cart_id`/`intent_id` fields (intent-level events only when they carry no cart or payment id), selects the capture by `payment_id`, renders a cart table from the `merchant.cart.quoted` envelope, shows the payment link and attempt count, uses an integer-only money formatter and escapes `|`/newlines in cells; `tamper()` validates the seq. Task 7 has **10** tests.
+- Test totals (supersede Amendment 5): after Task 10 **100**; after Task 12 **105**. README test count: 105.
+- Task 12 change: `cmd_ledger` must check `path.exists()` first and, if missing, print `no ledger at <path>` and return 2 (an empty ledger verifies as True, and construction no longer creates directories).
+- Docs (Task 14): the hash chain detects modification, insertion, deletion and reordering but not tail truncation or re-hashing of the last line; the receipt's head hash is the out-of-band anchor. Never say "tamper-proof"; say "tamper-evident, anchor the head hash externally".

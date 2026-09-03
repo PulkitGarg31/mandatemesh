@@ -173,9 +173,10 @@ Retry cap: 2 attempts per cart. Poll timeout is treated like a failure for retry
 ## 10. Ledger
 
 - Path: `runs/<run_id>/ledger.jsonl`, one event per line, append-only.
-- `verify()` recomputes every hash and returns `(ok: bool, first_bad_seq: int | None)`.
-- `receipt(payment_id)` renders Markdown: mandate ids, cart items and total, decision trail (every rule checked), link id, payment attempts and outcome, chain head hash.
-- `tamper(path, seq)` (demo helper) edits one payload field so `verify()` fails on camera.
+- `verify()` recomputes every hash and returns `(ok: bool, first_bad_position: int | None)`; a `seq` that does not match its position, an unparsable line, or a broken link all report the first bad position. The chain detects modification, insertion, deletion and reordering; it does not detect tail truncation or a re-hashed last line, so the receipt's head hash is the out-of-band anchor.
+- `append()` deep-normalises the payload through JSON before hashing, so what is hashed is exactly what a reload produces, and later mutation by the caller cannot drift memory from disk.
+- `receipt(payment_id)` renders Markdown: mandate ids, amount, payment link, attempt count and outcome, the cart table from the merchant's signed quote, the last decision trail (every rule checked), the related events, and the chain head hash. Related events are matched on whole `payment_id` / `cart_id` fields (intent-level events only when they carry neither).
+- `tamper(path, seq)` (demo helper) edits one payload field without re-hashing so `verify()` fails on camera.
 
 ## 11. CLI
 
