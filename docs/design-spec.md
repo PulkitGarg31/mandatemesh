@@ -61,7 +61,7 @@ User ──signs──> IntentMandate (max_total, max_per_txn, merchant allow-li
 |---|---|---|
 | `crypto.py` | Ed25519 keygen, canonical JSON, `sign(payload, key) -> Envelope`, `verify(envelope, pubkey) -> bool` | `cryptography` |
 | `mandates.py` | Dataclasses: `IntentMandate`, `AgentProposal`, `CartMandate`, `StepUpToken`, `PaymentMandate`; `Envelope` | `crypto` |
-| `registry.py` | `AgentRegistry.register(agent_id, pubkey)`, `is_active`, `pubkey_of`, `revoke(agent_id)` | — |
+| `registry.py` | `AgentRegistry.register(agent_id, pubkey_b64)` (refuses a revoked id: revocation is permanent), `get(agent_id) -> AgentRecord | None`, `is_active`, `revoke(agent_id)` | — |
 | `gate.py` | `PolicyGate.evaluate(...) -> Decision`; rule table below; pure, no I/O | `mandates`, `registry`, `crypto` |
 | `ledger.py` | `Ledger.append(type, actor, payload)`, `verify()`, `receipt(payment_id)`, `spent_for(intent_id)` | — |
 | `executor.py` | `Executor` protocol; `FakeExecutor`; `RazorpayExecutor` | `razorpay` (real only) |

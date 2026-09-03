@@ -3711,3 +3711,11 @@ Rule table gains a first row: `R00 WELL_FORMED — intent, proposal and cart pay
 ### Test totals (supersede Amendments 1 and 2)
 
 Task 1 12 · Task 2 10 · Task 3 3 · Task 4 3 · Task 5 5 · Task 6 25 · Task 7 5 · Task 8 7 · Task 9 4 · Task 10 10 · Task 11 2 · Task 12 3. Running total after Task 10: **84**; after Task 12: **89**. README test count: 89. The Task 12 CLI test `test_keys_init_then_scripted_fake_demo_and_ledger_commands` tampers seq 3; that is still a valid event index.
+
+---
+
+## Amendment 4 (2026-09-03, after Task 4 review)
+
+- `AgentRegistry.register()` refuses an id whose record is revoked (revocation is permanent). Task 4 has **4** tests.
+- Test totals (supersede Amendment 3): running total after Task 10 is **85**; after Task 12 is **90**. README test count: 90.
+- Docs (Task 14): add the registry trust-root caveat to `docs/protocol-mapping.md` ("in-process, unsigned dict seeded by the orchestrator; whoever runs the orchestrator is the root of trust for agent identity; UAP's reported design centralises that in an NPCI-operated repository") and word the threat model as "the agent module is constructed with the agent key only; the LLM never receives key material; all four keys are loaded by the one orchestrator process in this demo".
