@@ -3755,3 +3755,13 @@ Task 1 12 · Task 2 10 · Task 3 3 · Task 4 3 · Task 5 5 · Task 6 25 · Task 
 - Test totals (supersede Amendment 7): after Task 10 **110**; after Task 12 **115**. README test count: 115.
 - Task 12 change: render the LLM's `justification` and any `last_error` through `rich.markup.escape` (untrusted text).
 - Docs (Task 14): the prompt rule and wrapper reduce how often the model proposes a bad cart; the gate is the control and bounds whatever is proposed. The wrapper prevents structural escape, not persuasion.
+
+---
+
+## Amendment 9 (2026-09-03, after Task 10 review)
+
+- `orchestrator.py`: the money-collection tail lives in `_collect` / `_captured` / `_close_link`. `create_payment_link` errors → `razorpay.link.failed` + outcome `error`; polling errors → `payment.error`, the link is closed, outcome `error`; if `cancel` fails, one final poll looks for a late capture (recorded as `payment.captured` → `paid`) and otherwise records `razorpay.link.cancel_failed` (never a false `razorpay.link.cancelled`); `payment.abandoned` carries the real attempt count and, when the gate refused the retry, the rule id. The replay guard is `orchestrator.replay_refused` with actor `orchestrator`. `RunResult.outcome` vocabulary: `paid | abandoned | denied | declined | no_proposal | quote_rejected | error`. Task 10 has **16** tests.
+- Test totals (supersede Amendment 8; the earlier totals under-counted): suite is **119** after Task 10, **121** after Task 11, **124** after Task 12. The README count must be copied from `python -m pytest -q`.
+- Task 12 changes: the `say` wrapper prints with Rich markup disabled (`console.print(s, markup=False)`) so `[gate]`-style prefixes survive and an LLM justification cannot inject markup; `cmd_demo` returns 1 when `result.outcome == "error"`; `cmd_ledger` refuses a missing file (Amendment 6).
+- Task 13 / Task 15 changes: record `stepup` and `poison` with `--agent scripted` (a well-behaved model turns them into happy paths); never run `poison` with `--auto-approve yes` against the real executor (step-up overrides both caps for that cart: an INR 30,000 link); pass `--poll-timeout 90` on takes where a timeout is not the point.
+- Docs (Task 14): replay guard wording "a cart id with a capture already in this ledger is refused; freshness otherwise comes from the TTLs"; step-up is an explicit human override of both caps for one cart, and the prompt shows the exact amount.
