@@ -57,3 +57,18 @@ def test_quote_rejects_other_merchant_and_empty_cart(world):
         merchant.quote(proposal_env(keys, [ProposalItem("RICE5", 1)], merchant_id="other-shop"))
     with pytest.raises(MerchantError, match="empty"):
         merchant.quote(proposal_env(keys, []))
+
+
+def test_quote_rejects_malformed_proposal_as_merchant_error(world):
+    keys, merchant = world
+    env = proposal_env(keys, [ProposalItem("RICE5", 1)])
+    bad = sign({**env.payload, "items": [{"sku": "RICE5", "qty": 2.0}]}, keys.agent, env.signer)
+    with pytest.raises(MerchantError, match="malformed proposal"):
+        merchant.quote(bad)
+
+
+@pytest.mark.parametrize("qty", [0, -1])
+def test_quote_rejects_non_positive_quantity(world, qty):
+    keys, merchant = world
+    with pytest.raises(MerchantError, match="invalid qty"):
+        merchant.quote(proposal_env(keys, [ProposalItem("RICE5", qty)]))

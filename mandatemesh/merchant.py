@@ -9,14 +9,14 @@ from typing import Callable
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from mandatemesh.crypto import Envelope, public_b64, sign
-from mandatemesh.mandates import AgentProposal, CartItem, CartMandate, new_id
+from mandatemesh.mandates import AgentProposal, CartItem, CartMandate, MalformedMandate, new_id
 
 CART_TTL_S = 600
 DEFAULT_FEED = Path(__file__).resolve().parent.parent / "merchant_data" / "feed.json"
 
 
 class MerchantError(Exception):
-    """The merchant refused to quote (unknown SKU, out of stock, wrong merchant, empty cart)."""
+    """The merchant refused to quote (malformed proposal, unknown SKU, out of stock, wrong merchant, empty cart, bad quantity)."""
 
 
 class MockMerchant:
@@ -44,7 +44,10 @@ class MockMerchant:
         return json.dumps(self.catalog(), ensure_ascii=False)
 
     def quote(self, proposal_env: Envelope) -> Envelope:
-        proposal = AgentProposal.from_payload(proposal_env.payload)
+        try:
+            proposal = AgentProposal.from_payload(proposal_env.payload)
+        except MalformedMandate as exc:
+            raise MerchantError(f"malformed proposal: {exc}") from exc
         if proposal.merchant_id != self.merchant_id:
             raise MerchantError(f"proposal addressed to '{proposal.merchant_id}', not '{self.merchant_id}'")
         if not proposal.items:
