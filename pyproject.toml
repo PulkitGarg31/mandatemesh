@@ -1,0 +1,19 @@
+[project]
+name = "mandatemesh"
+version = "0.1.0"
+description = "Mandate-scoped buyer agent with a deterministic policy gate on Razorpay test mode"
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=42",
+  "razorpay>=1.4",
+  "openai>=1.50",
+  "python-dotenv>=1.0",
+  "rich>=13",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

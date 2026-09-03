@@ -1,0 +1,6 @@
+cryptography>=42
+razorpay>=1.4
+openai>=1.50
+python-dotenv>=1.0
+rich>=13
+pytest>=8
