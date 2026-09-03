@@ -78,9 +78,9 @@ All signed objects use one **Envelope**:
 
 ```json
 {"payload": {...}, "signer": "user|agent:<id>|merchant:<id>|gate", "alg": "Ed25519",
- "sig": "<base64url of Ed25519 signature over canonical JSON of payload>"}
+ "sig": "<base64url of Ed25519 signature over canonical JSON of {alg, payload, signer}>"}
 ```
-Canonical JSON = `json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)`. This is deliberately JWS-*like*, not full JWS; the README says so.
+Canonical JSON = `json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)`. The signature covers `alg`, `signer` and `payload` together, so none can be swapped after signing. Signatures and keys are strict unpadded base64url (any other character, padding, or impossible length fails verification). This is deliberately JWS-*like*, not full JWS; the README says so.
 
 | Object | Signer | Payload fields |
 |---|---|---|

@@ -3650,3 +3650,10 @@ Step 2's fallback paragraph is obsolete: the Payments-API lookup is now the prim
 - README "Test-mode caveats": replace the webhooks bullet with: "**No webhooks** (they need a public URL); the executor polls the Payment Link for capture and the Payments API for failed attempts, matched by the link's order id or the mandate id in its notes."
 - README and `.env.example` Groq model is `openai/gpt-oss-120b` (Groq shut down `llama-3.3-70b-versatile` in August 2026).
 - README test count: 78.
+
+---
+
+## Amendment 2 (2026-09-03, after Task 1 review)
+
+- `crypto.py` now signs `canonical_json({"alg", "payload", "signer"})` (helper `signing_input`), decodes only strict unpadded base64url, and rejects NaN. Keys stored anywhere (registry, ledger, key files) must be unpadded base64url. No later task text changes; `sign`/`verify` signatures are unchanged.
+- Task 1 has 12 tests. Running totals: 73 after Task 10 becomes **78**; 78 after Task 12 becomes **83**. README test count: 83.
