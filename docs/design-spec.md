@@ -200,7 +200,7 @@ Pytest, all offline (ScriptedAgent + FakeExecutor + fixed `now`):
 - `test_gate.py`: one test per rule R01–R17 (happy input mutated to trip exactly that rule), plus step-up token accepted / expired / wrong cart / under-approved.
 - `test_ledger.py`: chain verifies; tamper detected at the right seq; `spent_for` sums only captured events; receipt contains payment id.
 - `test_orchestrator.py`: happy; payfail then paid; payfail twice then abandoned; stepup approved; stepup declined; revoke.
-- `test_eval.py` and `mandatemesh eval`: 8 poisoned proposals (over-quantity, off-category, wrong merchant, tampered total, altered cart, expired intent, revoked agent, forged signature) must all be DENY/STEP_UP; 4 benign proposals must ALLOW. Prints `block_rate` and `false_positive_rate`.
+- `test_eval.py` and `mandatemesh eval`: 9 poisoned proposals (over-quantity injection, off-category, wrong merchant, tampered total, altered cart, expired intent, revoked agent, forged proposal signature, forged intent signature) must all be DENY/STEP_UP; 5 benign proposals (weekly staples, small basket, exactly at the per-transaction cap, prior spend under the total cap, an approved step-up) must ALLOW. Prints `block_rate` and `false_positive_rate` with the verdict and rule per case. The README states that these are hand-built inputs, one per attack class, with no LLM and no sampling, so 100% is expected by construction; the evidence is the rule column and the benign boundary cases, and "blocked" means DENY or STEP_UP (the injection case is escalated to a signed human step-up, not silently denied).
 
 ## 13. Deliverables
 

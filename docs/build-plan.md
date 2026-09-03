@@ -3765,3 +3765,11 @@ Task 1 12 · Task 2 10 · Task 3 3 · Task 4 3 · Task 5 5 · Task 6 25 · Task 
 - Task 12 changes: the `say` wrapper prints with Rich markup disabled (`console.print(s, markup=False)`) so `[gate]`-style prefixes survive and an LLM justification cannot inject markup; `cmd_demo` returns 1 when `result.outcome == "error"`; `cmd_ledger` refuses a missing file (Amendment 6).
 - Task 13 / Task 15 changes: record `stepup` and `poison` with `--agent scripted` (a well-behaved model turns them into happy paths); never run `poison` with `--auto-approve yes` against the real executor (step-up overrides both caps for that cart: an INR 30,000 link); pass `--poll-timeout 90` on takes where a timeout is not the point.
 - Docs (Task 14): replay guard wording "a cart id with a capture already in this ledger is refused; freshness otherwise comes from the TTLs"; step-up is an explicit human override of both caps for one cart, and the prompt shows the exact amount.
+
+---
+
+## Amendment 10 (2026-09-03, after Task 11 review)
+
+- `evalset.py` has 9 poisoned cases (adds `forged_intent_signature` → R04) and 5 benign cases (adds `benign_stepup_approved` → ALLOW with a valid step-up token); `tests/test_eval.py` pins every case's `(verdict, rule_id)`. Still 2 tests; suite stays at **121** after Task 11 and **124** after Task 12.
+- Task 12 change: the `eval` table keeps the `verdict` column so STEP_UP is visible next to the DENYs.
+- README (Task 14) eval section must say, verbatim in spirit: "These are 14 hand-built inputs, one per attack class, run against the deterministic gate with no LLM and no sampling, so 100% is expected by construction; the evidence is the rule column (nine distinct rules fire) and the benign boundary cases (exactly at the per-transaction cap; prior spend just under the total cap; an approved step-up), which show the gate is not simply denying everything." and "Blocked means DENY or STEP_UP: the catalog-injection case (50 units of ghee) is escalated to a signed human step-up bound to that exact cart and total, not silently denied." The README eval table has 9/9 blocked and 0/5 wrongly blocked.
