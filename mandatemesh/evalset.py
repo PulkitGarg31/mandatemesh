@@ -1,4 +1,4 @@
-"""Abuse eval: every poisoned, forged or out-of-mandate proposal must be blocked; every benign one must pass.
+"""Abuse eval, 9 poisoned and 5 benign: every poisoned, forged or out-of-mandate proposal must be blocked; every benign one must pass.
 
 'Blocked' means the gate did not return ALLOW (DENY or STEP_UP both keep money from moving without a human).
 """
@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from mandatemesh.crypto import sign
-from mandatemesh.fixtures import AGENT_ID, POISON_ITEMS, World, happy_chain, make_gate_input, make_world, resign_cart
+from mandatemesh.fixtures import AGENT_ID, POISON_ITEMS, STEPUP_ITEMS, World, happy_chain, make_gate_input, make_stepup, make_world, resign_cart
 from mandatemesh.gate import ALLOW, GateInput, PolicyGate
 from mandatemesh.mandates import ProposalItem
 
@@ -71,6 +71,10 @@ def build_cases() -> list[Case]:
     i, p, c = happy_chain(w)
     add("forged_proposal_signature", True, w, make_gate_input(w, i, sign(p.payload, w.keys.user, p.signer), c))
 
+    w = make_world()
+    i, p, c = happy_chain(w)
+    add("forged_intent_signature", True, w, make_gate_input(w, sign(i.payload, w.keys.agent, i.signer), p, c))
+
     # ---- benign (must pass) ----
     w = make_world()
     i, p, c = happy_chain(w)
@@ -87,6 +91,10 @@ def build_cases() -> list[Case]:
     w = make_world()
     i, p, c = happy_chain(w)
     add("benign_with_prior_spend", False, w, make_gate_input(w, i, p, c, spent_paise=100_000))
+
+    w = make_world()
+    i, p, c = happy_chain(w, items=STEPUP_ITEMS)
+    add("benign_stepup_approved", False, w, make_gate_input(w, i, p, c, stepup=make_stepup(w, i, c)))
 
     return cases
 
