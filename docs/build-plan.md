@@ -3784,3 +3784,132 @@ Task 1 12 · Task 2 10 · Task 3 3 · Task 4 3 · Task 5 5 · Task 6 25 · Task 
 - `gate.py` R10 checks the empty cart before computing bad lines (cosmetic); `test_gate.py` now has a real huge-total test (STEP_UP R14 on a 10**400 cart) and an R99 test.
 - Test totals: **128** after the polish pass. The README count must be copied from `python -m pytest -q`.
 - Task 15 recording note: with the fake executor, the retry path only shows if `FAKE_OUTCOMES=failed,paid` is exported; record `payfail` against the real executor.
+
+
+---
+
+# Part II plan — Delegation, refunds, replay (Tasks 16–20)
+
+Base: commit `0759538` (132 tests). Same rules as Part I: tests first, offline, stage by explicit path, run all commands from the repo root. Spec: `docs/design-spec.md` Part II.
+
+### Task 16: SubMandate, planner key, delegation rules R18/R19
+
+**Files:** modify `mandatemesh/mandates.py`, `mandatemesh/keys.py`, `mandatemesh/gate.py`, `mandatemesh/fixtures.py`; tests `tests/test_keys.py`, `tests/test_mandates.py`, `tests/test_gate.py`.
+
+- `mandates.py`: add after `PaymentMandate`:
+```python
+@dataclass
+class SubMandate:
+    """Signed by the delegator agent. Narrows a parent mandate for one delegate agent."""
+
+    sub_id: str
+    parent_id: str
+    delegator_id: str
+    agent_id: str
+    currency: str
+    max_total_paise: int
+    max_per_txn_paise: int
+    merchant_allowlist: list[str]
+    categories: list[str]
+    issued_at: int
+    expires_at: int
+    nonce: str
+
+    def to_payload(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_payload(cls, p: dict) -> "SubMandate":
+        return _parse(cls, p, cls.__name__)
+```
+- `keys.py`: `ROLES = ("user", "agent", "merchant", "gate", "planner")`; add `planner: Ed25519PrivateKey` as the fifth dataclass field. Update `tests/test_keys.py::test_generate_has_four_distinct_roles` to assert the five-role tuple and `len(pubs) == 5` (rename to `..._five_distinct_roles`).
+- `gate.py`:
+  - `GateInput` gains `chain: list[Envelope] = field(default_factory=list)` and `spent_by: dict[str, int] = field(default_factory=dict)`.
+  - Add a small bound view used by the rules:
+```python
+@dataclass
+class _Bound:
+    id: str
+    agent_id: str
+    currency: str
+    max_total_paise: int
+    max_per_txn_paise: int
+    merchant_allowlist: list[str]
+    categories: list[str]
+    expires_at: int
+
+
+def _bound_of(m: IntentMandate | SubMandate) -> _Bound:
+    return _Bound(getattr(m, "intent_id", None) or m.sub_id, m.agent_id, m.currency, m.max_total_paise, m.max_per_txn_paise,
+                  list(m.merchant_allowlist), list(m.categories), m.expires_at)
+```
+  - In `_evaluate`: parse `subs = [SubMandate.from_payload(e.payload) for e in gi.chain]` inside the R00 try block. After R05 insert R18 and R19:
+```python
+        links: list[_Bound] = [_bound_of(intent)]
+        if not subs:
+            ok("R18_DELEGATION_CHAIN", "no delegation: proposal is under the root mandate")
+            ok("R19_DELEGATION_SUBSET", "no delegation: nothing to narrow")
+        for i, (env, sub) in enumerate(zip(gi.chain, subs)):
+            parent = links[-1]
+            rec = self.registry.get(sub.delegator_id)
+            if rec is None or rec.status != ACTIVE:
+                return fail("R18_DELEGATION_CHAIN", f"link {i}: delegator {sub.delegator_id!r} is not an active registered agent")
+            if not verify(env, rec.pubkey_b64):
+                return fail("R18_DELEGATION_CHAIN", f"link {i}: sub-mandate signature does not verify against {sub.delegator_id!r}")
+            if sub.parent_id != parent.id:
+                return fail("R18_DELEGATION_CHAIN", f"link {i}: parent_id {sub.parent_id!r} is not the previous link {parent.id!r}")
+            if sub.delegator_id != parent.agent_id:
+                return fail("R18_DELEGATION_CHAIN", f"link {i}: delegator {sub.delegator_id!r} is not the previous link's agent {parent.agent_id!r}")
+            if sub.currency != parent.currency:
+                return fail("R19_DELEGATION_SUBSET", f"link {i}: currency {sub.currency} != parent {parent.currency}")
+            if sub.max_total_paise > parent.max_total_paise or sub.max_per_txn_paise > parent.max_per_txn_paise:
+                return fail("R19_DELEGATION_SUBSET", f"link {i}: caps {rupees(sub.max_total_paise)}/{rupees(sub.max_per_txn_paise)} exceed parent {rupees(parent.max_total_paise)}/{rupees(parent.max_per_txn_paise)}")
+            if not set(sub.merchant_allowlist) <= set(parent.merchant_allowlist):
+                return fail("R19_DELEGATION_SUBSET", f"link {i}: merchants {sorted(set(sub.merchant_allowlist) - set(parent.merchant_allowlist))} are not in the parent's allow-list")
+            if not set(sub.categories) <= set(parent.categories):
+                return fail("R19_DELEGATION_SUBSET", f"link {i}: categories {sorted(set(sub.categories) - set(parent.categories))} are not in the parent's categories")
+            if sub.expires_at > parent.expires_at:
+                return fail("R19_DELEGATION_SUBSET", f"link {i}: expires_at {sub.expires_at} is later than the parent's {parent.expires_at}")
+            if gi.now >= sub.expires_at:
+                return fail("R19_DELEGATION_SUBSET", f"link {i}: sub-mandate expired at {sub.expires_at}")
+            links.append(_bound_of(sub))
+        if subs:
+            ok("R18_DELEGATION_CHAIN", f"{len(subs)}-link delegation chain verified: " + " -> ".join(b.agent_id for b in links))
+            ok("R19_DELEGATION_SUBSET", "every link narrows or equals its parent")
+        leaf = links[-1]
+```
+  - R06 compares `proposal.agent_id != leaf.agent_id` (detail names the leaf). R12/R13/R17 use `leaf.merchant_allowlist`, `leaf.categories`, `leaf.currency`.
+  - R14/R15: replace the two blocks with a loop over `links`; for each link: per-txn breach → STEP_UP/R16 logic as before with detail `f"link {b.agent_id}: cart ... exceeds per-transaction cap ..."`; total: `spent = gi.spent_paise if b is links[0] else gi.spent_by.get(b.id, 0)`, `spent + total > b.max_total_paise` → STEP_UP/R16 as before. Emit one `ok` per rule summarising the tightest link (`min` of caps) when all pass.
+- `fixtures.py`: add `PLANNER_ID = "planner-01"`; `make_world` registers `PLANNER_ID` with `keys.pub("planner")`; add `make_sub(w, parent_env, delegator_key, delegator_id, **over) -> Envelope` (defaults: `sub_id=new_id("sm")`, `parent_id=parent_env.payload.get("intent_id") or parent_env.payload["sub_id"]`, `agent_id=AGENT_ID`, currency INR, caps 100_000/100_000, merchants `[MERCHANT_ID]`, categories groceries, `expires_at=parent_env.payload["expires_at"]`); `make_gate_input` gains `chain=None, spent_by=None`; `delegated_chain(w, items=None, **sub_over) -> (intent, sub, proposal, cart)` where the intent's `agent_id=PLANNER_ID` and the sub delegates to `AGENT_ID`.
+- Tests to add in `tests/test_gate.py` (12): happy delegated ALLOW with R18/R19 passed and `"planner-01 -> shopper-01"` in the R18 detail; undelegated happy still ALLOW with 19 checks and R18 detail containing "no delegation"; R18: delegator not registered; delegator revoked; sub signed by the wrong key; wrong parent_id; delegator not the parent's agent; R19: total cap over parent; per-txn over parent; merchant not in parent; category not in parent; expiry later than parent; expired sub; R06: proposal from the planner instead of the leaf → DENY R06; R14 on the sub's cap (sub 50_000 per-txn, cart 91_000) → STEP_UP naming the link; R15 with `spent_by={sub_id: 60_000}` and sub total 100_000 → STEP_UP. Expected: `python -m pytest -q` → 132 + 14 = **146** (count what pytest prints).
+- Commit: `feat(gate): delegation chains that can only shrink (R18, R19), planner key`.
+
+### Task 17: Orchestrator delegation scenarios and ledger spend per link
+
+**Files:** modify `mandatemesh/orchestrator.py`, `mandatemesh/ledger.py`, `mandatemesh/cli.py`; tests `tests/test_orchestrator.py`, `tests/test_ledger.py`, `tests/test_cli.py`.
+
+- `Scenario` gains `delegation: list[dict] | None = None` (each `{"max_total_paise", "max_per_txn_paise", "merchant_allowlist", "categories"}`; one entry = one sub-mandate planner→specialist) and the intent's agent becomes `PLANNER_ID` when `delegation` is set. New scenarios `delegate` (sub 100_000/100_000) and `overreach` (sub 500_000/500_000), both with the happy basket and `HAPPY_REQUEST`.
+- Orchestrator: constructor gains `planner_id: str = "planner-01"`. In `run`, when `sc.delegation`: register the planner with `keys.pub("planner")` (ledger `agent.registered`), sign each `SubMandate` with `keys.planner` as `f"agent:{planner_id}"` (parent = intent then previous sub; `agent_id = self.agent.agent_id`; `expires_at` = intent's), append `mandate.sub.created` `{intent_id, sub_id, parent_id, delegator_id, agent_id, envelope}`, and pass `chain` to `_decide`. `_decide` fills `spent_by={sub_id: ledger.spent_for(sub_id)}` and records in `gate.decision`: `now`, `spent_paise`, `spent_by`, `chain_ids`, `stepup_id` (or None). `mandate.intent.created` adds `user_pubkey`; `merchant.cart.quoted` adds `merchant_pubkey`; `payment.captured` adds `chain_ids`.
+- `ledger.spent_for(mandate_id)`: sum `amount_paise` of `payment.captured` events where `mandate_id == payload.get("intent_id")` or `mandate_id in payload.get("chain_ids", [])`, minus `refund.created` amounts for the same `payment_id`s (refund events come in Task 18; implement the subtraction now, tested with a hand-appended `refund.created` event).
+- CLI: no new flags; scenarios appear automatically. `keys init` prints five roles.
+- Tests: `delegate` → paid, events include `agent.registered` twice and `mandate.sub.created`, `gate.decision` payload has `chain_ids == [intent_id, sub_id]` and `now`; `overreach` → denied on R19, no links; `spent_for(sub_id)` equals 91_000 after the delegated run; ledger `spent_for` subtracts a refund; CLI `demo --scenario delegate --agent scripted --executor fake` → 0 and `overreach` → 0. Expected total **153**.
+- Commit: `feat(orchestrator): delegated purchases with per-link spend; decision events carry replay inputs`.
+
+### Task 18: Gated refunds
+
+**Files:** modify `mandatemesh/mandates.py` (`ShortLine`, `ShortfallAttestation`, `RefundMandate` as in spec §17), `mandatemesh/merchant.py` (`attest_shortfall(cart_env, payment_id, lines: list[ShortLine]) -> Envelope`: validates lines against the cart, computes `refund_paise`, signs as `merchant:<id>`, expiry 600 s), `mandatemesh/gate.py` (`RefundInput`, `PolicyGate.evaluate_refund` with RF00–RF08 and the RF99 guard, mirroring `evaluate`/`_evaluate`), `mandatemesh/executor.py` (`RefundInfo(refund_id, status, amount_paise)`; `Executor.refund`; `FakeExecutor.refund` records into `self.refunds` and returns `RefundInfo(f"rfnd_fake{n:03d}", "processed", amount)`; `RazorpayExecutor.refund` calls `self.client.payment.refund(razorpay_payment_id, {"amount": amount_paise, "notes": {...}}, timeout=REQUEST_TIMEOUT_S)` and returns `RefundInfo(data["id"], data["status"], int(data["amount"]))`), `mandatemesh/orchestrator.py` (`Scenario.shortfall: list[tuple[str, int]] | None`; scenario `refund` = happy basket then shortfall `[("OIL1", 1)]`; after `_captured` returns paid and `sc.shortfall` is set, run `_refund(...)`: merchant attests → `merchant.shortfall` → `evaluate_refund` with `captured_paise` and `refunded_paise` from the ledger and `seen_shortfalls` from `refund.created` events → `refund.decision` (payload includes `now`, `captured_paise`, `refunded_paise`, `seen_shortfalls`, `gate_pubkey`, `shortfall_id`) → on ALLOW sign `RefundMandate` with `keys.gate` → `mandate.refund.created` → executor refund → `refund.created` `{payment_id, razorpay_payment_id, refund_id, amount_paise, status, shortfall_id}`; `RunResult` gains `refund_id`; outcome stays `paid`), `mandatemesh/cli.py` (print the refund line and include refunds in `print_ledger`).
+- Tests: `test_mandates` round trips for the three objects; `test_merchant` attest happy (140_00 for OIL1×1), rejects unknown sku / qty_short > qty; `test_gate` refund rules one per RF rule (10 tests) using new fixture helpers `make_shortfall(w, cart_env, payment_env, lines, **over)` and `make_payment_mandate(w, cart_env, ...)` (gate-signed); `test_executor` fake refund + real refund stub (`payment.refund` called with the amount and timeout); `test_orchestrator` refund scenario → `refund.created` present, `spent_for(intent) == 91_000 - 14_000`, and a duplicate shortfall on the same payment → `refund.decision` DENY RF08; `test_cli` `demo --scenario refund --agent scripted --executor fake` → 0. Expected total about **175**.
+- Commit: `feat(refunds): merchant shortfall attestations, refund rules RF00-RF08, gated Razorpay refunds`.
+
+### Task 19: Replay
+
+**Files:** modify `mandatemesh/ledger.py` (`replay(registry_factory=AgentRegistry, gate_factory=PolicyGate) -> ReplayReport(decisions, identical, first_divergence: tuple[int, str] | None)`; import gate/registry/mandates lazily inside the function to avoid cycles), `mandatemesh/cli.py` (`ledger replay <path>`: prints `N decisions replayed, M identical`; exit 0 if all identical else 2; requires a file), tests `tests/test_ledger.py`, `tests/test_cli.py`.
+- Reconstruction per `gate.decision` at seq k: registry = apply `agent.registered` / `agent.revoked` events with seq < k; intent env from `mandate.intent.created` with matching `intent_id` (+ `user_pubkey`); proposal env from the `agent.proposal` whose `proposal_id` equals the cart's `proposal_id`; cart env from `merchant.cart.quoted` with `cart_id` (+ `merchant_pubkey` → `merchant_pubs`); chain from `mandate.sub.created` events in `chain_ids` order (skip the intent id); stepup env from `stepup.approved` with `stepup_id`; `now`, `spent_paise`, `spent_by` from the payload. Compare `Decision.to_dict()` with the recorded `{verdict, rule_id, reason, checks}`. For `refund.decision`: rebuild `RefundInput` from `merchant.shortfall` (attestation envelope by `shortfall_id`), the cart, the payment mandate envelope from `mandate.payment.created`, and the recorded `captured_paise` / `refunded_paise` / `seen_shortfalls` / `gate_pubkey` / `now`.
+- Tests: replay of a fake happy run → 1 decision, identical; delegated run → identical; stepup run (two decisions) → identical; refund run → purchase and refund decisions identical; a ledger whose recorded `verdict` is edited (via `tamper`-style edit that also recomputes hashes so `verify` passes) → divergence reported at that seq; CLI `ledger replay` exit codes. Expected total about **182**.
+- Commit: `feat(ledger): offline replay of every gate decision`.
+
+### Task 20: Eval cases, README and docs for Part II
+
+- `evalset.py`: `delegation_overreach` (sub caps above parent → R19), `delegation_forged_sub` (sub signed with the merchant key → R18), `benign_delegated` (proper chain → ALLOW); `test_eval.py` EXPECTED updated (11 poisoned, 6 benign).
+- README: new pitch line and three sections (Delegation, Refunds, Replay) with the rule tables RF00–RF08 and R18/R19, the `delegate` / `overreach` / `refund` scenarios and `ledger replay` in the CLI section, updated test count from `pytest -q`, "19 checks" instead of 17 where the happy trail is described; `docs/design-spec.md` already has Part II; `docs/threat-model.md` rows for delegation overreach, forged sub-mandate, over-refund, duplicate refund, replay divergence; `docs/decisions.md` D12–D14 (delegation only shrinks; refunds gated like payments; decisions record their inputs so anyone can replay); `docs/protocol-mapping.md` (UPI Circle delegation depth, AP2 delegation); `docs/form-answers.md` and `docs/build-log.md` updated.
+- Commit: `docs: Part II (delegation, refunds, replay)`.

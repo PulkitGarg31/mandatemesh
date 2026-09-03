@@ -230,3 +230,58 @@ Video (5 min, Windows Game Bar, unlisted YouTube or Drive): 0:00 problem and why
 | Failures | 2 | all five scenarios pass with fake executor; `eval` prints numbers |
 | Docs | 1.5 | README, docs/, build log, form answers |
 | Video + submit | 2 | recording uploaded; form submitted once with all links |
+
+
+---
+
+# Part II — Delegation, refunds, replay (added 2026-09-03 evening)
+
+**Why:** several submissions do "buyer agent plus merchant checkout with a budget cap". Part II makes three claims they do not: mandates can only shrink when delegated, refunds are gated money actions too, and the audit trail can be replayed offline. Everything builds on Part I; no Part I behaviour changes except the trail growing two rules.
+
+## 16. Delegation: mandates that only shrink
+
+**Objects.** `SubMandate` (signed by the *delegator agent's* key, verified against the registry): `sub_id`, `parent_id` (the root `intent_id` or a parent `sub_id`), `delegator_id`, `agent_id` (the delegate), `currency`, `max_total_paise`, `max_per_txn_paise`, `merchant_allowlist[]`, `categories[]`, `issued_at`, `expires_at`, `nonce`. A fifth key role `planner`; the demo planner is agent `planner-01`, the specialist is `shopper-01`.
+
+**Gate input.** `GateInput.chain: list[Envelope]` (sub-mandates, root-first, leaf last; empty for an undelegated purchase) and `GateInput.spent_by: dict[str, int]` (spend per sub id; `spent_paise` stays the root's).
+
+**Rules** (evaluated after R05 and before R06; R00 also covers sub-mandate parsing):
+
+| Rule | Check | On fail |
+|---|---|---|
+| R18 `DELEGATION_CHAIN` | for each link i: delegator is registered and active; the envelope verifies against the delegator's registry key; `parent_id` equals the previous link's id (the intent for i = 0); `delegator_id` equals the previous link's `agent_id` | DENY |
+| R19 `DELEGATION_SUBSET` | for each link: `currency` equal; `max_total_paise` and `max_per_txn_paise` at most the parent's; merchants and categories subsets of the parent's; `expires_at` no later than the parent's; `now < expires_at` | DENY |
+
+R06 now reads "the proposal comes from the **leaf** mandate's agent". R12, R13, R17 use the leaf's bounds (a subset of every ancestor's). R14 and R15 apply to **every** link, root to leaf, with spend per link id; the failing detail names the tightest link. With no chain, R18 and R19 record a passing "no delegation" check so the trail is always complete (19 checks on the undelegated happy path).
+
+**Scenarios.** `delegate`: user → planner (2,000 / 1,500, kirana-one, groceries) → planner signs a sub-mandate for the specialist (1,000 / 1,000, same merchant and category, expires with the intent) → specialist proposes the 910 rupee basket → ALLOW → Payment Link. `overreach`: the planner signs a 5,000 / 5,000 sub-mandate → R19 DENY, nothing created. Ledger: `mandate.sub.created` (envelope, `sub_id`, `parent_id`, `delegator_id`, `agent_id`), `payment.captured` carries `chain_ids` (root intent id then each sub id) so `spent_for` works per link.
+
+## 17. Refunds are money actions too
+
+**Objects.** `ShortfallAttestation` (merchant-signed): `shortfall_id`, `cart_id`, `payment_id`, `lines[{sku, qty_short}]`, `refund_paise`, `issued_at`, `expires_at` (10 min). `RefundMandate` (gate-signed): `refund_id`, `payment_id`, `razorpay_payment_id`, `amount_paise`, `currency`, `issued_at`.
+
+**Gate.** A second pure function `PolicyGate.evaluate_refund(RefundInput) -> Decision`. `RefundInput`: `attestation`, `cart`, `payment` (the three envelopes), `merchant_pubs`, `gate_pub_b64`, `captured_paise`, `refunded_paise`, `seen_shortfalls`, `now`.
+
+| Rule | Check | On fail |
+|---|---|---|
+| RF00 `WELL_FORMED` | the three payloads parse strictly | DENY |
+| RF01 `CART_SIG` | cart verifies against the merchant key | DENY |
+| RF02 `PAYMENT_SIG` | payment mandate verifies against the gate key and `payment.cart_id == cart.cart_id` | DENY |
+| RF03 `ATTESTATION_SIG` | attestation verifies against the cart's merchant key; `cart_id` and `payment_id` match | DENY |
+| RF04 `ATTESTATION_NOT_EXPIRED` | `now < expires_at` | DENY |
+| RF05 `PAYMENT_CAPTURED` | `captured_paise > 0` | DENY |
+| RF06 `SHORTFALL_INTEGRITY` | every short line is a cart line with `1 ≤ qty_short ≤ qty`; `refund_paise == Σ qty_short × unit_price_paise` from the signed cart; `refund_paise > 0` | DENY |
+| RF07 `REFUND_WITHIN_CAPTURE` | `refund_paise ≤ captured_paise − refunded_paise` | DENY |
+| RF08 `NO_DUPLICATE` | `shortfall_id` not already refunded | DENY |
+| RF99 `GATE_ERROR` | guard | DENY |
+
+**Executor.** `refund(razorpay_payment_id, amount_paise, notes) -> RefundInfo(refund_id, status)`. Real: `client.payment.refund(pid, {"amount", "notes"}, timeout=10)`; verified in test mode on 2026-09-03 (`rfnd_TXZlazlLHEtbmo`, status `pending`, payment `amount_refunded` updated). Fake: records and returns `rfnd_fake001`.
+
+**Flow** (scenario `refund` = the happy purchase, then): merchant attests OIL1 short by 1 (140.00) → `merchant.shortfall` → `refund.decision` → on ALLOW the gate signs a RefundMandate → `mandate.refund.created` → executor refund → `refund.created` (refund id, status, amount). `spent_for(id)` becomes captured minus refunded for that payment.
+
+## 18. Replayable audit
+
+Decision events record everything the pure gate consumed: `gate.decision` gains `now`, `spent_paise`, `spent_by`, `chain_ids`, `stepup_id`; `mandate.intent.created` gains `user_pubkey`; `merchant.cart.quoted` gains `merchant_pubkey`; `refund.decision` gains `now`, `captured_paise`, `refunded_paise`, `seen_shortfalls`, `gate_pubkey`. `Ledger.replay()` rebuilds each decision's input from the events before it (registry state from `agent.registered` / `agent.revoked`; envelopes by id), re-runs the gate, and compares `{verdict, rule_id, reason, checks}` to what was recorded. CLI: `ledger replay <path>` prints `N decisions replayed, N identical` (exit 0) or the first divergence (exit 2). A tampered ledger fails `verify` first; replay is about *reasoning* integrity, `verify` about *record* integrity.
+
+## 19. Eval and docs
+
+Eval gains `delegation_overreach` (R19), `delegation_forged_sub` (R18) and `benign_delegated` (ALLOW): 11 poisoned, 6 benign. README pitch: "delegation-safe money for agents: mandates only shrink, every money action is gated including refunds, and the audit trail replays offline". Video adds three beats: delegation can only shrink; money back is gated too; an auditor replays every decision.
