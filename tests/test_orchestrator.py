@@ -114,5 +114,72 @@ def test_replay_of_an_already_paid_cart_is_refused(tmp_path, monkeypatch):
     ledger.append("payment.captured", "executor", {"intent_id": "im_old", "cart_id": "cm_fixed", "payment_id": "pm_old", "amount_paise": 91_000})
     r = orch.run(sc)
     assert r.outcome == "denied" and r.decision is None and ex.links == []
-    assert types(ledger)[-1] == "gate.replay_refused"
+    assert types(ledger)[-1] == "orchestrator.replay_refused"
     assert ledger.verify() == (True, None)
+
+
+class _CancelRaises(FakeExecutor):
+    def cancel(self, link_id):
+        raise RuntimeError("payment link is already paid")
+
+
+class _PollRaises(FakeExecutor):
+    def poll(self, link_id, timeout_s, interval_s, seen):
+        raise RuntimeError("BadRequestError: bad link")
+
+
+class _CreateRaises(FakeExecutor):
+    def create_payment_link(self, pm, description, notes):
+        raise RuntimeError("network down")
+
+
+def test_link_creation_failure_is_an_error_outcome(tmp_path):
+    orch, sc, ex, ledger = build(tmp_path, "happy")
+    orch.executor = _CreateRaises()
+    r = orch.run(sc)
+    assert r.outcome == "error" and r.link is None
+    assert types(ledger)[-1] == "razorpay.link.failed" and ledger.verify() == (True, None)
+
+
+def test_cancel_failure_with_late_capture_is_recorded_as_paid(tmp_path):
+    orch, sc, ex, ledger = build(tmp_path, "payfail")
+    orch.executor = _CancelRaises(["failed", "failed", "paid"])
+    r = orch.run(sc)
+    assert r.outcome == "paid"
+    t = types(ledger)
+    assert "razorpay.link.cancelled" not in t and t[-1] == "payment.captured"
+    assert ledger.spent_for(r.intent_id) == 91_000
+
+
+def test_cancel_failure_without_capture_is_honest(tmp_path):
+    orch, sc, ex, ledger = build(tmp_path, "payfail")
+    orch.executor = _CancelRaises(["failed", "failed"])
+    r = orch.run(sc)
+    assert r.outcome == "abandoned"
+    t = types(ledger)
+    assert "razorpay.link.cancelled" not in t and t[-2:] == ["razorpay.link.cancel_failed", "payment.abandoned"]
+
+
+def test_poll_exception_closes_the_link_and_reports_error(tmp_path):
+    orch, sc, ex, ledger = build(tmp_path, "happy")
+    orch.executor = _PollRaises()
+    r = orch.run(sc)
+    assert r.outcome == "error" and r.link is not None
+    t = types(ledger)
+    assert "payment.error" in t and t[-1] == "razorpay.link.cancelled"
+    assert orch.executor.cancelled == [r.link.link_id]
+
+
+def test_approver_sees_cart_and_decision_and_token_is_reused_on_retry(tmp_path):
+    seen_args = []
+
+    def approver(cart, decision):
+        seen_args.append((cart.total_paise, decision.verdict, decision.rule_id))
+        return True
+
+    orch, sc, ex, ledger = build(tmp_path, "stepup", outcomes=("failed", "paid"))
+    orch.approver = approver
+    r = orch.run(sc)
+    assert r.outcome == "paid"
+    assert seen_args == [(180_000, "STEP_UP", "R14_PER_TXN_CAP")]
+    assert [d.payload["verdict"] for d in ledger.of_type("gate.decision")] == ["STEP_UP", "ALLOW", "ALLOW"]
