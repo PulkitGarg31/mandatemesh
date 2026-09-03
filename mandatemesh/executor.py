@@ -95,7 +95,8 @@ class RazorpayExecutor:
                 "notes": {str(k)[:40]: str(v)[:256] for k, v in notes.items()},
                 "notify": {"sms": False, "email": False},
                 "reminder_enable": False,
-            }
+            },
+            timeout=REQUEST_TIMEOUT_S,
         )
         return LinkInfo(data["id"], data["short_url"], data["status"])
 
@@ -110,8 +111,10 @@ class RazorpayExecutor:
                 errors = 0
             except Exception as exc:  # network blips and 5xx must not abort a 3-minute wait
                 errors += 1
-                if type(exc).__name__ == "BadRequestError" or errors >= MAX_CONSECUTIVE_ERRORS or time.monotonic() >= deadline:
+                if type(exc).__name__ == "BadRequestError" or errors >= MAX_CONSECUTIVE_ERRORS:
                     raise
+                if time.monotonic() >= deadline:
+                    return PollResult("timeout", attempts=attempts)
                 time.sleep(interval_s)
                 continue
             if data.get("status") == "paid":
@@ -155,4 +158,4 @@ class RazorpayExecutor:
         return sorted(by_id.values(), key=lambda a: a.payment_id)
 
     def cancel(self, link_id: str) -> None:
-        self.client.payment_link.cancel(link_id)
+        self.client.payment_link.cancel(link_id, timeout=REQUEST_TIMEOUT_S)

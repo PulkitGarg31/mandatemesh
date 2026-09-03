@@ -144,3 +144,25 @@ def test_razorpay_poll_tolerates_transient_errors_then_succeeds():
 def test_razorpay_executor_refuses_live_key():
     with pytest.raises(ValueError, match="TEST keys"):
         RazorpayExecutor("rzp_live_abc", "secret")
+
+
+def test_razorpay_create_and_cancel_pass_timeouts():
+    ex = RazorpayExecutor.__new__(RazorpayExecutor)
+    ex._clock = lambda: 1_800_000_000
+    calls = []
+
+    class FakeLinks:
+        def create(self, data, **kw):
+            calls.append(("create", kw.get("timeout")))
+            return {"id": "plink_1", "short_url": "https://rzp.io/x", "status": "created"}
+
+        def cancel(self, link_id, **kw):
+            calls.append(("cancel", kw.get("timeout")))
+
+    class FakeClient:
+        payment_link = FakeLinks()
+
+    ex.client = FakeClient()
+    link = ex.create_payment_link(PM, "desc", {"payment_id": "pm_1"})
+    ex.cancel(link.link_id)
+    assert calls == [("create", 10), ("cancel", 10)]
