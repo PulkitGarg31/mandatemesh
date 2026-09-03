@@ -116,12 +116,12 @@ class ScriptedAgent:
 
 class LLMAgent:
     def __init__(self, agent_id: str, private_key: Ed25519PrivateKey, base_url: str, api_key: str, model: str,
-                 clock: Callable[[], int] | None = None, max_turns: int = MAX_TURNS) -> None:
+                 clock: Callable[[], int] | None = None, max_turns: int = MAX_TURNS, timeout_s: int = 60) -> None:
         from openai import OpenAI  # imported here so tests without the SDK loaded still import the module
 
         self.agent_id = agent_id
         self._key = private_key
-        self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=60, max_retries=1)
+        self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout_s, max_retries=1)
         self.model = model
         self.max_turns = max_turns
         self._clock = clock or (lambda: int(time.time()))

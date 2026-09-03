@@ -54,7 +54,7 @@ def build_agent(mode: str, keys: Keys, sc: Scenario):
     if not (base_url and api_key and model):
         raise SystemExit("LLM_BASE_URL, LLM_API_KEY and LLM_MODEL must be set in .env (or pass --agent scripted)")
     console.print(f"[dim]agent: {escape(model)} via {escape(base_url)}[/]")
-    return LLMAgent(AGENT_ID, keys.agent, base_url=base_url, api_key=api_key, model=model)
+    return LLMAgent(AGENT_ID, keys.agent, base_url=base_url, api_key=api_key, model=model, timeout_s=int(os.environ.get("LLM_TIMEOUT_S", "60")))
 
 
 def build_executor(mode: str):
