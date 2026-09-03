@@ -131,6 +131,8 @@ def cmd_demo(args: argparse.Namespace) -> int:
     console.rule("result")
     if result.decision is not None:
         print_decision(result.decision)
+    if result.refund_decision is not None:  # money back was decided too, so its trail goes on screen as well
+        print_decision(result.refund_decision)
     print_ledger(ledger)
     if result.refund_id:
         console.print(f"[green]refund {escape(result.refund_id)} recorded[/]")
@@ -155,7 +157,8 @@ def cmd_ledger(args: argparse.Namespace) -> int:
         console.print(Ledger(path).receipt(args.payment_id), markup=False)
         return 0
     if args.ledger_cmd == "replay":
-        report = Ledger(path).replay()
+        ledger = Ledger(path)
+        report = ledger.replay()
         if report.rows:
             table = Table(title=f"Replay of {escape(str(path))}: every gate decision, recomputed from this file alone")
             for col in ("seq", "kind", "recorded", "replayed", "ok"):
@@ -164,13 +167,15 @@ def cmd_ledger(args: argparse.Namespace) -> int:
                 table.add_row(str(row.seq), row.kind, row.recorded, row.replayed, "[green]yes[/]" if row.identical else "[red]NO[/]")
             console.print(table)
         console.print(f"{report.decisions} decisions replayed, {report.identical} identical", markup=False)
+        ok, bad = ledger.verify()  # replaying the reasoning says nothing about the file's integrity; report both
+        console.print("[green]chain: verified[/]" if ok else f"[red]chain: BROKEN at seq {bad}[/]")
         diverged = report.first_divergence
         if diverged is not None:
             console.print(f"[red]seq {diverged.seq}: {escape(diverged.note)}[/]")
             return 2
         if not report.rows:
             console.print("no gate decisions in this ledger", markup=False)
-        return 0
+        return 0 if ok else 2
     tamper(path, args.seq)
     console.print(f"[yellow]edited seq {args.seq} in {escape(str(path))} without re-hashing; now run: ledger verify[/]")
     return 0

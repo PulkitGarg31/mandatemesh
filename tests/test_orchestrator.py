@@ -283,6 +283,16 @@ def test_refund_scenario_pays_then_refunds_the_short_line(tmp_path):
     assert ledger.verify() == (True, None)
 
 
+def test_refund_run_carries_both_decisions(tmp_path):
+    orch, sc, ex, ledger = build(tmp_path, "refund")
+    r = orch.run(sc)
+    assert r.decision is not None and r.decision.verdict == "ALLOW"
+    assert r.refund_decision is not None
+    assert r.refund_decision.verdict == "ALLOW" and r.refund_decision.rule_id == "ALLOW"
+    assert [c.rule_id for c in r.refund_decision.checks][-1] == "RF08_NO_DUPLICATE"
+    assert build(tmp_path / "plain", "happy")[0].run(SCENARIOS["happy"]).refund_decision is None
+
+
 def test_duplicate_shortfall_is_denied_on_rf08(tmp_path, monkeypatch):
     monkeypatch.setattr("mandatemesh.merchant.new_id", lambda prefix: "sf_fixed" if prefix == "sf" else real_new_id(prefix))
     orch, sc, ex, ledger = build(tmp_path, "refund")

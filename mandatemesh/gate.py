@@ -119,7 +119,9 @@ class PolicyGate:
             proposal = AgentProposal.from_payload(gi.proposal.payload)
             intent = IntentMandate.from_payload(gi.intent.payload)
             cart = CartMandate.from_payload(gi.cart.payload)
-            subs = [SubMandate.from_payload(e.payload) for e in gi.chain]
+            # Parse at most one link past the limit: R18 rejects an over-long chain below, so a padded
+            # chain never costs more than nine parses however many envelopes it carries.
+            subs = [SubMandate.from_payload(e.payload) for e in gi.chain[:MAX_DELEGATION_LINKS + 1]]
         except MalformedMandate as exc:
             return fail("R00_WELL_FORMED", f"malformed mandate: {str(exc)[:200]}")
         ok("R00_WELL_FORMED", f"intent, proposal, cart and {len(subs)} sub-mandate payloads are well-formed" if subs
@@ -150,7 +152,7 @@ class PolicyGate:
         # link's agent, parented to it, and no id repeated -- so a later R19 denial still leaves a recorded R18 verdict.
         links: list[_Bound] = [_bound_of(intent)]
         if len(subs) > MAX_DELEGATION_LINKS:
-            return fail("R18_DELEGATION_CHAIN", f"delegation chain of {len(subs)} links exceeds the maximum of {MAX_DELEGATION_LINKS}")
+            return fail("R18_DELEGATION_CHAIN", f"delegation chain of {len(gi.chain)} links exceeds the maximum of {MAX_DELEGATION_LINKS}")
         seen_ids = {links[0].id}
         for i, (env, sub) in enumerate(zip(gi.chain, subs)):
             parent = links[-1]
@@ -256,18 +258,23 @@ class PolicyGate:
             return gi.spent_paise if b is links[0] else gi.spent_by.get(b.id, 0)
 
         total = cart.total_paise
+        chained = len(links) > 1  # with no delegation there is one cap, so the detail names no link and no tightest
         breach: dict[str, str] = {}
         for b in links:
             spent = spent_under(b)
+            where = f"first breach root-first: link {b.agent_id!r}: " if chained else ""
             if "R14_PER_TXN_CAP" not in breach and total > b.max_per_txn_paise:
-                breach["R14_PER_TXN_CAP"] = f"first breach root-first: link {b.agent_id!r}: cart {rupees(total)} exceeds the per-transaction cap {rupees(b.max_per_txn_paise)}"
+                breach["R14_PER_TXN_CAP"] = f"{where}cart {rupees(total)} exceeds the per-transaction cap {rupees(b.max_per_txn_paise)}"
             if "R15_TOTAL_CAP" not in breach and spent + total > b.max_total_paise:
-                breach["R15_TOTAL_CAP"] = f"first breach root-first: link {b.agent_id!r}: spent {rupees(spent)} + cart {rupees(total)} exceeds the total cap {rupees(b.max_total_paise)}"
+                breach["R15_TOTAL_CAP"] = f"{where}spent {rupees(spent)} + cart {rupees(total)} exceeds the total cap {rupees(b.max_total_paise)}"
         tight_txn = min(links, key=lambda b: b.max_per_txn_paise)
         tight_total = min(links, key=lambda b: b.max_total_paise - spent_under(b))
+        projected = rupees(spent_under(tight_total) + total)
         within = (
-            ("R14_PER_TXN_CAP", f"cart {rupees(total)} is within every per-transaction cap (tightest: {tight_txn.agent_id!r} {rupees(tight_txn.max_per_txn_paise)})"),
-            ("R15_TOTAL_CAP", f"projected spend {rupees(spent_under(tight_total) + total)} is within every total cap (tightest: {tight_total.agent_id!r} {rupees(tight_total.max_total_paise)})"),
+            ("R14_PER_TXN_CAP", f"cart {rupees(total)} is within every per-transaction cap (tightest: {tight_txn.agent_id!r} {rupees(tight_txn.max_per_txn_paise)})"
+             if chained else f"cart {rupees(total)} is within the per-transaction cap {rupees(tight_txn.max_per_txn_paise)}"),
+            ("R15_TOTAL_CAP", f"projected spend {projected} is within every total cap (tightest: {tight_total.agent_id!r} {rupees(tight_total.max_total_paise)})"
+             if chained else f"projected spend {projected} is within the total cap {rupees(tight_total.max_total_paise)}"),
         )
         for rule, within_detail in within:
             if rule not in breach:

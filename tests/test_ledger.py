@@ -192,6 +192,16 @@ def test_replay_matches_delegated_stepup_and_refund_runs(tmp_path):
     assert any(r.kind == "refund" and r.replayed == "ALLOW" for r in refund.rows)
 
 
+def test_receipt_of_a_refunded_payment_shows_the_refund_trail(tmp_path):
+    ledger = Ledger(record_run(tmp_path, "refund"))
+    payment_id = ledger.of_type("mandate.payment.created")[0].payload["payment_id"]
+    created = ledger.of_type("refund.created")[0].payload
+    text = ledger.receipt(payment_id)
+    assert "## Gate decision: ALLOW\n" in text  # rule id equals the verdict, so no parenthetical
+    assert "## Refund decision: ALLOW" in text and "RF06_SHORTFALL_INTEGRITY" in text
+    assert f"- Refund: `{created['refund_id']}` INR 140.00 processed" in text
+
+
 def test_replay_detects_a_doctored_verdict(tmp_path):
     path = record_run(tmp_path, "happy")
     rows = read_rows(path)

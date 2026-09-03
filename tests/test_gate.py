@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from mandatemesh.crypto import Envelope, sign
@@ -549,7 +551,33 @@ def test_r18_rejects_an_over_long_chain(w):
     assert "exceeds the maximum" in d.reason
 
 
+def test_r18_length_bounds_the_parse_so_a_padded_chain_is_cheap(w):
+    intent = make_intent(w, agent_id=PLANNER_ID)
+    sub = make_sub(w, intent)  # one signed link, repeated: only the first nine are ever parsed
+    proposal = make_proposal(w, intent)
+    cart = w.merchant.quote(proposal)
+    started = time.perf_counter()
+    d = decide(w, intent, proposal, cart, chain=[sub] * 500)
+    elapsed = time.perf_counter() - started
+    assert (d.verdict, d.rule_id) == (DENY, "R18_DELEGATION_CHAIN")
+    assert "delegation chain of 500 links exceeds the maximum of 8" in d.reason
+    assert elapsed < 0.5, f"rejecting a padded chain took {elapsed:.3f}s"
+
+
 def test_delegated_details_name_index_and_agent(w):
     intent, sub, proposal, cart = delegated_chain(w, max_per_txn_paise=50_000)
     d = decide(w, intent, proposal, cart, chain=[sub])
     assert d.verdict == STEP_UP and "first breach root-first" in d.reason
+
+
+def test_undelegated_cap_details_carry_no_delegation_vocabulary(w):
+    intent, proposal, cart = happy_chain(w, items=STEPUP_ITEMS)
+    d = decide(w, intent, proposal, cart)
+    assert (d.verdict, d.rule_id) == (STEP_UP, "R14_PER_TXN_CAP")
+    assert "first breach root-first" not in d.reason and "link '" not in d.reason
+    assert d.reason.startswith("cart INR 1,800.00 exceeds the per-transaction cap INR 1,500.00")
+    assert "tightest" not in check(decide(w, *happy_chain(w)), "R14_PER_TXN_CAP").detail
+    d_intent, sub, d_proposal, d_cart = delegated_chain(w, max_per_txn_paise=50_000)
+    delegated = decide(w, d_intent, d_proposal, d_cart, chain=[sub])
+    assert delegated.verdict == STEP_UP
+    assert "first breach root-first" in delegated.reason and "link '" in delegated.reason

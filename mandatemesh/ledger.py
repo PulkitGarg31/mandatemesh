@@ -99,6 +99,15 @@ def _cell(text: object) -> str:
     return str(text).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
 
 
+def _summary(payload: dict, limit: int = 200) -> str:
+    """One-line JSON summary of an event payload, cut at the last field boundary that fits."""
+    text = json.dumps(payload, ensure_ascii=True)
+    if len(text) <= limit:
+        return text
+    cut = text.rfind(",", 0, limit)
+    return text[:cut] if cut > 0 else text[:limit]
+
+
 class Ledger:
     def __init__(self, path: Path, clock: Callable[[], int] | None = None) -> None:
         self.path = path
@@ -285,6 +294,8 @@ class Ledger:
 
         related = [e for e in self._events if is_related(e.payload)]
         decisions = [e for e in related if e.type == "gate.decision"]
+        refund_decisions = [e for e in related if e.type == "refund.decision"]
+        refunded = next((e for e in self.of_type("refund.created") if e.payload.get("payment_id") == payment_id), None)
         captured = next((e for e in self.of_type("payment.captured") if e.payload.get("payment_id") == payment_id), None)
         quoted = next((e for e in self.of_type("merchant.cart.quoted") if e.payload.get("cart_id") == cart_id), None)
         link = next((e for e in self.of_type("razorpay.link.created") if e.payload.get("payment_id") == payment_id), None)
@@ -306,6 +317,10 @@ class Ledger:
             f"- Payment link: `{link.payload.get('link_id')}` ({link.payload.get('short_url')})" if link else "- Payment link: none created",
             f"- Payment attempts: {len(attempts)}",
             f"- Outcome: {outcome}",
+        ]
+        if refunded:
+            lines.append(f"- Refund: `{refunded.payload.get('refund_id')}` {_inr(refunded.payload.get('amount_paise', 0))} {refunded.payload.get('status')}")
+        lines += [
             f"- Ledger head hash: `{self.head_hash}`",
             f"- Chain: {'verified' if ok else f'BROKEN at seq {bad}'}",
             "",
@@ -317,16 +332,21 @@ class Ledger:
                 qty, unit = int(it.get("qty", 0)), int(it.get("unit_price_paise", 0))
                 lines.append(f"| {_cell(it.get('sku'))} | {_cell(it.get('title'))} | {qty} | {_inr(unit)} | {_inr(qty * unit)} |")
             lines += [f"| | **total** | | | **{_inr(cart.get('total_paise', 0))}** |", ""]
+        def decision_section(heading: str, payload: dict) -> list[str]:
+            verdict, rule_id = payload.get("verdict"), payload.get("rule_id")
+            title = f"{heading}: {verdict}" if rule_id == verdict else f"{heading}: {verdict} ({rule_id})"
+            rows = [f"| {c['rule_id']} | {'yes' if c['passed'] else 'NO'} | {_cell(c['detail'])} |" for c in payload.get("checks", [])]
+            return [f"## {title}", "", _cell(payload.get("reason", "")), "", "| rule | passed | detail |", "|---|---|---|", *rows, ""]
+
         if decisions:
-            last = decisions[-1].payload
-            lines += [f"## Gate decision: {last.get('verdict')} ({last.get('rule_id')})", "", _cell(last.get("reason", "")), "", "| rule | passed | detail |", "|---|---|---|"]
-            lines += [f"| {c['rule_id']} | {'yes' if c['passed'] else 'NO'} | {_cell(c['detail'])} |" for c in last.get("checks", [])]
-            lines.append("")
+            lines += decision_section("Gate decision", decisions[-1].payload)
+        if refund_decisions:  # money going back was decided by the same kind of trail; it belongs on the receipt
+            lines += decision_section("Refund decision", refund_decisions[-1].payload)
         lines += ["## Events", "", "| seq | ts | type | actor | summary |", "|---|---|---|---|---|"]
         hidden = ("envelope", "checks", "intent_id", "cart_id", "payment_id")
         for e in related:
-            summary = json.dumps({k: v for k, v in e.payload.items() if k not in hidden}, ensure_ascii=True)
-            lines.append(f"| {e.seq} | {e.ts} | {e.type} | {_cell(e.actor)} | {_cell(summary[:120])} |")
+            summary = _summary({k: v for k, v in e.payload.items() if k not in hidden})
+            lines.append(f"| {e.seq} | {e.ts} | {e.type} | {_cell(e.actor)} | {_cell(summary)} |")
         return "\n".join(lines) + "\n"
 
 

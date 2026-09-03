@@ -70,6 +70,20 @@ def test_ledger_replay_command(tmp_path, monkeypatch, capsys):
     assert main(["ledger", "replay", str(tmp_path / "nope.jsonl")]) == 2
 
 
+def test_replay_reports_a_broken_chain_even_when_every_decision_matches(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("FAKE_OUTCOMES", raising=False)
+    assert main(["keys", "init"]) == 0
+    assert main(["demo", "--scenario", "refund", "--agent", "scripted", "--executor", "fake", "--run-id", "rp2"]) == 0
+    ledger = tmp_path / "runs" / "rp2" / "ledger.jsonl"
+    with ledger.open("a", encoding="utf-8") as f:
+        f.write('{"seq": 99, "truncated')  # a half-written tail line: every decision still replays identically
+    capsys.readouterr()
+    assert main(["ledger", "replay", str(ledger)]) == 2
+    out = capsys.readouterr().out
+    assert "2 decisions replayed, 2 identical" in out and "chain: BROKEN at seq" in out
+
+
 def test_cli_errors_are_clean_exit_codes(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("FAKE_OUTCOMES", raising=False)

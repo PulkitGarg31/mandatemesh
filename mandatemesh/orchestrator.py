@@ -122,6 +122,7 @@ class RunResult:
     razorpay_payment_id: str | None = None
     link: LinkInfo | None = None
     refund_id: str | None = None
+    refund_decision: Decision | None = None  # the nine-rule refund trail, when a refund was decided at all
 
 
 def inr(paise: int) -> str:
@@ -318,14 +319,17 @@ class Orchestrator:
                   amount_paise: int, chain_ids: list[str]) -> RunResult:
         self.ledger.append("payment.captured", "executor", {**base, "attempt": attempt, "razorpay_payment_id": razorpay_payment_id, "amount_paise": amount_paise, "chain_ids": list(chain_ids)})
         self.say(f"[razorpay] CAPTURED {razorpay_payment_id} {inr(amount_paise)}")
-        refund_id = None
+        refund_id, refund_decision = None, None
         if sc.shortfall and razorpay_payment_id:  # nothing to refund against if the link never told us the payment id
-            refund_id = self._refund(sc, cart, pm, pm_env, razorpay_payment_id, chain_ids)
-        return RunResult("paid", decision, pm.intent_id, pm.payment_id, razorpay_payment_id, link, refund_id)
+            refund_id, refund_decision = self._refund(sc, cart, pm, pm_env, razorpay_payment_id, chain_ids)
+        return RunResult("paid", decision, pm.intent_id, pm.payment_id, razorpay_payment_id, link, refund_id, refund_decision)
 
     def _refund(self, sc: Scenario, cart_env: Envelope, pm: PaymentMandate, pm_env: Envelope,
-                razorpay_payment_id: str, chain_ids: list[str]) -> str | None:
-        """Money back is a money action: the merchant only attests, the gate decides, the executor obeys a signed mandate."""
+                razorpay_payment_id: str, chain_ids: list[str]) -> tuple[str | None, Decision | None]:
+        """Money back is a money action: the merchant only attests, the gate decides, the executor obeys a signed mandate.
+
+        Returns (refund mandate id, refund decision); the decision is None only when the gate was never asked.
+        """
         assert sc.shortfall is not None
         iid, cid = pm.intent_id, pm.cart_id
         base = {"intent_id": iid, "cart_id": cid, "payment_id": pm.payment_id}
@@ -334,7 +338,7 @@ class Orchestrator:
         except MerchantError as exc:
             self.ledger.append("merchant.shortfall.rejected", f"merchant:{self.merchant.merchant_id}", {**base, "reason": str(exc)[:200]})
             self.say(f"[merchant] shortfall rejected: {str(exc)[:200]}")
-            return None
+            return None, None
         att = ShortfallAttestation.from_payload(att_env.payload)
         self.ledger.append("merchant.shortfall", f"merchant:{self.merchant.merchant_id}", {
             **base, "shortfall_id": att.shortfall_id, "refund_paise": att.refund_paise, "envelope": att_env.to_dict(),
@@ -359,7 +363,7 @@ class Orchestrator:
         })
         self.say(f"[gate] {d.verdict}: {d.reason}" if d.rule_id == d.verdict else f"[gate] {d.verdict} ({d.rule_id}): {d.reason}")
         if d.verdict != ALLOW:
-            return None
+            return None, d
 
         rm = RefundMandate(new_id("rm"), pm.payment_id, razorpay_payment_id, att.refund_paise, pm.currency, self._clock())
         rm_env = sign(rm.to_payload(), self.keys.gate, "gate")
@@ -376,14 +380,14 @@ class Orchestrator:
                 "error": f"{type(exc).__name__}: {exc}",
             })
             self.say(f"[razorpay] refund failed: {type(exc).__name__}: {exc}")
-            return None
+            return None, d
         self.ledger.append("refund.created", "executor", {
             "intent_id": iid, "payment_id": pm.payment_id, "shortfall_id": att.shortfall_id,
             "refund_id": rm.refund_id, "razorpay_refund_id": info.refund_id, "amount_paise": info.amount_paise,
             "status": info.status, "chain_ids": list(chain_ids),
         })
         self.say(f"[razorpay] REFUNDED {info.refund_id} {inr(info.amount_paise)}")
-        return rm.refund_id
+        return rm.refund_id, d
 
     def _close_link(self, base: dict, seen: set[str], link: LinkInfo) -> PollResult | None:
         """Cancel the link. If Razorpay refuses (typically because it was just paid), look once more for a capture.
