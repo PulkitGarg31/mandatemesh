@@ -5,7 +5,9 @@ from mandatemesh.executor import FakeExecutor
 from mandatemesh.fixtures import AGENT_ID, FIXED_NOW, MERCHANT_ID
 from mandatemesh.keys import Keys
 from mandatemesh.ledger import Ledger
+from mandatemesh.mandates import MalformedMandate
 from mandatemesh.merchant import MockMerchant
+import mandatemesh.orchestrator as orch_mod
 from mandatemesh.orchestrator import SCENARIOS, Orchestrator
 from mandatemesh.registry import AgentRegistry
 
@@ -200,3 +202,11 @@ def test_keyboard_interrupt_closes_the_link_then_propagates(tmp_path):
     t = [e.type for e in ledger.events()]
     assert t[-2:] == ["payment.error", "razorpay.link.cancelled"]
     assert orch.executor.cancelled
+
+
+def test_malformed_cart_is_a_quote_rejection_not_a_crash(tmp_path, monkeypatch):
+    monkeypatch.setattr(orch_mod.CartMandate, "from_payload", classmethod(lambda cls, p: (_ for _ in ()).throw(MalformedMandate("bad cart"))))
+    orch, sc, ex, ledger = build(tmp_path, "happy")
+    r = orch.run(sc)
+    assert r.outcome == "quote_rejected" and ex.links == []
+    assert [e.type for e in ledger.events()][-1] == "merchant.quote.rejected"

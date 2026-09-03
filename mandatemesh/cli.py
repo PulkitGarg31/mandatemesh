@@ -70,7 +70,8 @@ def build_executor(mode: str):
 
 
 def print_decision(d: Decision) -> None:
-    table = Table(title=f"Gate decision: {d.verdict} ({d.rule_id})")
+    title = f"Gate decision: {d.verdict}" if d.rule_id == d.verdict else f"Gate decision: {d.verdict} ({d.rule_id})"
+    table = Table(title=title)
     table.add_column("rule")
     table.add_column("ok")
     table.add_column("detail")

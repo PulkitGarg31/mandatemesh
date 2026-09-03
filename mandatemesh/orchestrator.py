@@ -19,7 +19,7 @@ from mandatemesh.executor import Executor, LinkInfo, PollResult
 from mandatemesh.gate import ALLOW, STEP_UP, Decision, GateInput, PolicyGate
 from mandatemesh.keys import Keys
 from mandatemesh.ledger import Ledger
-from mandatemesh.mandates import CartMandate, IntentMandate, PaymentMandate, ProposalItem, StepUpToken, new_id
+from mandatemesh.mandates import CartMandate, IntentMandate, MalformedMandate, PaymentMandate, ProposalItem, StepUpToken, new_id
 from mandatemesh.merchant import MerchantError, MockMerchant
 from mandatemesh.registry import AgentRegistry
 
@@ -149,11 +149,11 @@ class Orchestrator:
 
         try:
             cart = self.merchant.quote(proposal)
-        except MerchantError as exc:
-            self.ledger.append("merchant.quote.rejected", f"merchant:{self.merchant.merchant_id}", {"intent_id": iid, "proposal_id": pid, "reason": str(exc)})
-            self.say(f"[merchant] rejected: {exc}")
+            cart_obj = CartMandate.from_payload(cart.payload)
+        except (MerchantError, MalformedMandate) as exc:
+            self.ledger.append("merchant.quote.rejected", f"merchant:{self.merchant.merchant_id}", {"intent_id": iid, "proposal_id": pid, "reason": str(exc)[:200]})
+            self.say(f"[merchant] rejected: {str(exc)[:200]}")
             return RunResult("quote_rejected", intent_id=iid)
-        cart_obj = CartMandate.from_payload(cart.payload)
         cid = cart_obj.cart_id
         self.ledger.append("merchant.cart.quoted", f"merchant:{self.merchant.merchant_id}", {"intent_id": iid, "cart_id": cid, "total_paise": cart_obj.total_paise, "envelope": cart.to_dict()})
         self.say(f"[merchant] cart {cid} total {inr(cart_obj.total_paise)} (price-locked, signed)")
@@ -277,5 +277,5 @@ class Orchestrator:
         )
         d = self.gate.evaluate(gi)
         self.ledger.append("gate.decision", "gate", {"intent_id": iid, "cart_id": cart.payload["cart_id"], **d.to_dict()})
-        self.say(f"[gate] {d.verdict} ({d.rule_id}): {d.reason}")
+        self.say(f"[gate] {d.verdict}: {d.reason}" if d.rule_id == d.verdict else f"[gate] {d.verdict} ({d.rule_id}): {d.reason}")
         return d

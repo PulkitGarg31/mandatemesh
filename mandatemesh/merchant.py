@@ -31,6 +31,12 @@ class MockMerchant:
         self._key = private_key
         self._clock = clock or (lambda: int(time.time()))
         feed = json.loads(feed_path.read_text(encoding="utf-8"))
+        for item in feed["items"]:
+            for key in ("item_id", "title", "category", "availability", "price_paise"):
+                if key not in item:
+                    raise MerchantError(f"feed item {item.get('item_id', '?')!r} is missing {key!r}")
+            if type(item["price_paise"]) is not int or item["price_paise"] < 0:
+                raise MerchantError(f"feed item {item['item_id']!r} has a non-integer or negative price_paise")
         self._items: dict[str, dict] = {item["item_id"]: item for item in feed["items"]}
 
     @property

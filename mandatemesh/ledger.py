@@ -123,6 +123,13 @@ class Ledger:
         quoted = next((e for e in self.of_type("merchant.cart.quoted") if e.payload.get("cart_id") == cart_id), None)
         link = next((e for e in self.of_type("razorpay.link.created") if e.payload.get("payment_id") == payment_id), None)
         attempts = [e for e in related if e.type in ("payment.failed", "payment.timeout", "payment.captured")]
+        ok, bad = self.verify()
+        if captured is None:
+            outcome = "not captured"
+        elif captured.payload.get("razorpay_payment_id") is None:
+            outcome = "captured (payment id not reported by the link)"
+        else:
+            outcome = f"captured as {captured.payload['razorpay_payment_id']}"
 
         lines = [
             f"# Receipt for payment mandate `{payment_id}`",
@@ -132,8 +139,9 @@ class Ledger:
             f"- Amount: {_inr(created.payload.get('amount_paise', 0))}",
             f"- Payment link: `{link.payload.get('link_id')}` ({link.payload.get('short_url')})" if link else "- Payment link: none created",
             f"- Payment attempts: {len(attempts)}",
-            f"- Outcome: {'captured as ' + str(captured.payload.get('razorpay_payment_id')) if captured else 'not captured'}",
+            f"- Outcome: {outcome}",
             f"- Ledger head hash: `{self.head_hash}`",
+            f"- Chain: {'verified' if ok else f'BROKEN at seq {bad}'}",
             "",
         ]
         if quoted:

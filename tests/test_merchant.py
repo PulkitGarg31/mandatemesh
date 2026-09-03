@@ -1,9 +1,11 @@
+import json
+
 import pytest
 
 from mandatemesh.crypto import sign, verify
 from mandatemesh.keys import Keys
 from mandatemesh.mandates import AgentProposal, CartMandate, ProposalItem
-from mandatemesh.merchant import MerchantError, MockMerchant
+from mandatemesh.merchant import DEFAULT_FEED, MerchantError, MockMerchant
 
 NOW = 1_800_000_000
 
@@ -72,3 +74,12 @@ def test_quote_rejects_non_positive_quantity(world, qty):
     keys, merchant = world
     with pytest.raises(MerchantError, match="invalid qty"):
         merchant.quote(proposal_env(keys, [ProposalItem("RICE5", qty)]))
+
+
+def test_feed_with_non_integer_price_is_rejected_at_load(tmp_path):
+    feed = json.loads(DEFAULT_FEED.read_text(encoding="utf-8"))
+    feed["items"][0]["price_paise"] = 450.0
+    bad = tmp_path / "feed.json"
+    bad.write_text(json.dumps(feed), encoding="utf-8")
+    with pytest.raises(MerchantError, match="price_paise"):
+        MockMerchant("kirana-one", Keys.generate().merchant, feed_path=bad)

@@ -5,8 +5,8 @@ description = "Mandate-scoped buyer agent with a deterministic policy gate on Ra
 requires-python = ">=3.11"
 dependencies = [
   "cryptography>=42",
-  "razorpay>=1.4",
-  "openai>=1.50",
+  "razorpay>=2.0",
+  "openai>=3",
   "python-dotenv>=1.0",
   "rich>=13",
 ]

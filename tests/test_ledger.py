@@ -112,3 +112,12 @@ def test_corrupt_line_reports_broken_instead_of_raising(tmp_path):
     with l.path.open("a", encoding="utf-8") as f:
         f.write('{"seq": 2, "truncated')
     assert make(tmp_path).verify() == (False, 2)
+
+
+def test_receipt_reports_a_broken_chain(tmp_path):
+    l = make(tmp_path)
+    l.append("mandate.payment.created", "gate", {"intent_id": "im_1", "cart_id": "cm_1", "payment_id": "pm_1", "amount_paise": 1})
+    l.append("payment.captured", "executor", {"intent_id": "im_1", "cart_id": "cm_1", "payment_id": "pm_1", "razorpay_payment_id": None, "amount_paise": 1})
+    assert "Chain: verified" in l.receipt("pm_1") and "payment id not reported" in l.receipt("pm_1")
+    tamper(l.path, 0)
+    assert "Chain: BROKEN at seq 0" in make(tmp_path).receipt("pm_1")
