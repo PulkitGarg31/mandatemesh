@@ -164,7 +164,7 @@ Retry cap: 2 attempts per cart. Poll timeout is treated like a failure for retry
 
 - SDK: `razorpay` Python package, test keys `rzp_test_...` from Dashboard → Account & Settings → API Keys (no KYC needed).
 - `Executor` protocol: `create_payment_link(pm, description, notes) -> LinkInfo{link_id, short_url, status}`; `poll(link_id, timeout_s, interval_s, seen_attempts) -> PollResult{outcome: paid|failed|timeout, payment_id, amount_paise, attempts[]}`; `cancel(link_id)`.
-- `RazorpayExecutor.poll` uses `client.payment_link.fetch(id)`: `status == "paid"` → paid; a new entry in the `payments` array with `status == "failed"` → failed. **Setup step verifies the `payments` array shape on a real failed attempt before the orchestrator relies on it.**
+- `RazorpayExecutor.poll` uses `client.payment_link.fetch(id)`: `status == "paid"` → paid. Razorpay documents that the link's `payments` array lists only captured payments, so failed attempts are found through `client.payment.all(...)`, matched to the link by its `order_id` or by the payment-mandate id placed in the link's `notes`; a newly seen payment with `status == "failed"` → failed. **The setup smoke test confirms which field matches on a real `failure@razorpay` attempt.**
 - `FakeExecutor(outcomes=[...])` returns scripted outcomes in order, no network.
 - Constraints designed around: `expire_by` must be ≥ 15 min in the future (we use 20); **test mode allows 30 Payment Links per account**, so development uses the fake executor and real calls are reserved for the setup smoke test and the final recorded runs; no webhooks (polling instead).
 

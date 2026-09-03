@@ -3533,3 +3533,120 @@ Paste from `docs/form-answers.md` (with the Build Challenges bullets updated fro
 - **§9 Razorpay**: `payments` array shape verified in T0 step 7 before T8 relies on it; fallback documented in T13 step 2.
 - **Type consistency**: `Envelope`, `GateInput`, `Decision`, `Check`, `LinkInfo`, `PollResult`, `Attempt`, `RunResult`, `Scenario`, `World` are defined once and used with the same field names throughout. `Keys.pub(role)`, `MockMerchant.pubkey_b64`, `Ledger.spent_for/of_type/receipt/verify/head_hash`, `Agent.propose(intent, merchant, request)` match across tasks.
 - **Test count**: T1 7 + T2 5 + T3 3 + T4 3 + T5 5 + T6 24 + T7 5 + T8 6 + T9 4 + T10 10 + T11 2 + T12 3 = **77**.
+
+---
+
+## Amendment 1 (2026-09-03, after Task 0 review) — supersedes parts of Tasks 8, 9, 12, 14
+
+**Finding:** Razorpay's Payment Link entity documents that its `payments` array "is populated only after a payment is successfully captured". Failed attempts therefore never appear there. Detection of a `failure@razorpay` attempt must use the Payments API (`client.payment.all`), matched to the link by `order_id` (the link gains an `order_id` once a customer attempts payment) or by the payment-mandate id we place in the link's `notes`.
+
+### Task 8 changes
+
+Replace `RazorpayExecutor.poll` with the two methods below (everything else in `executor.py` is unchanged):
+
+```python
+    def poll(self, link_id: str, timeout_s: int, interval_s: float, seen: set[str]) -> PollResult:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            data = self.client.payment_link.fetch(link_id)
+            attempts = self._attempts_for(data)
+            if data.get("status") == "paid":
+                paid = next((a for a in attempts if a.status in PAID_STATUSES), None)
+                amount = int(data.get("amount_paid", 0)) or (paid.amount_paise if paid else 0)
+                return PollResult("paid", paid.payment_id if paid else None, amount, attempts)
+            for a in attempts:
+                if a.status == "failed" and a.payment_id not in seen:
+                    seen.add(a.payment_id)
+                    return PollResult("failed", a.payment_id, a.amount_paise, attempts)
+            if time.monotonic() >= deadline:
+                return PollResult("timeout", attempts=attempts)
+            time.sleep(interval_s)
+
+    def _attempts_for(self, link: dict) -> list[Attempt]:
+        """Every payment attempt against this link.
+
+        The link's own `payments` array lists only captured payments, so failed attempts come from the
+        Payments API, matched by the link's order_id or by the payment-mandate id in the link's notes.
+        """
+        wanted_pm = (link.get("notes") or {}).get("payment_id")
+        order_id = link.get("order_id")
+        by_id: dict[str, Attempt] = {}
+        for p in link.get("payments") or []:
+            pid = str(p.get("payment_id", ""))
+            by_id[pid] = Attempt(pid, str(p.get("status", "")), int(p.get("amount", 0)))
+        for p in self.client.payment.all({"count": 25}).get("items", []):
+            matches_order = order_id is not None and p.get("order_id") == order_id
+            matches_notes = wanted_pm is not None and (p.get("notes") or {}).get("payment_id") == wanted_pm
+            if (matches_order or matches_notes) and p["id"] not in by_id:
+                by_id[p["id"]] = Attempt(p["id"], str(p.get("status", "")), int(p.get("amount", 0)))
+        return sorted(by_id.values(), key=lambda a: a.payment_id)
+```
+
+Replace `test_razorpay_poll_parses_payments_array_without_network` in `tests/test_executor.py` with these two tests (Task 8 now has **7** tests):
+
+```python
+def test_razorpay_poll_finds_failed_attempt_via_payments_api_without_network():
+    ex = RazorpayExecutor.__new__(RazorpayExecutor)  # skip __init__: no client construction
+    link_states = iter([
+        {"status": "created", "order_id": "order_1", "notes": {"payment_id": "pm_1"}, "payments": None},
+        {"status": "paid", "order_id": "order_1", "notes": {"payment_id": "pm_1"}, "amount_paid": 91000,
+         "payments": [{"payment_id": "pay_ok", "status": "captured", "amount": 91000}]},
+    ])
+    payments_api = [
+        {"id": "pay_f1", "status": "failed", "amount": 91000, "order_id": "order_1", "notes": {"payment_id": "pm_1"}},
+        {"id": "pay_other", "status": "failed", "amount": 500, "order_id": "order_zzz", "notes": {}},
+    ]
+
+    class FakeLinks:
+        def fetch(self, link_id):
+            return next(link_states)
+
+    class FakePayments:
+        def all(self, data):
+            return {"items": payments_api}
+
+    class FakeClient:
+        payment_link = FakeLinks()
+        payment = FakePayments()
+
+    ex.client = FakeClient()
+    seen: set[str] = set()
+    r1 = ex.poll("plink_x", 5, 0, seen)
+    assert r1.outcome == "failed" and r1.payment_id == "pay_f1" and seen == {"pay_f1"}
+    r2 = ex.poll("plink_x", 5, 0, seen)
+    assert r2.outcome == "paid" and r2.payment_id == "pay_ok" and r2.amount_paise == 91000
+    assert {a.payment_id for a in r2.attempts} == {"pay_f1", "pay_ok"}
+
+
+def test_razorpay_attempts_match_by_notes_when_order_id_missing():
+    ex = RazorpayExecutor.__new__(RazorpayExecutor)
+
+    class FakePayments:
+        def all(self, data):
+            return {"items": [{"id": "pay_n", "status": "failed", "amount": 1, "order_id": None, "notes": {"payment_id": "pm_9"}}]}
+
+    class FakeClient:
+        payment = FakePayments()
+
+    ex.client = FakeClient()
+    attempts = ex._attempts_for({"notes": {"payment_id": "pm_9"}, "payments": None})
+    assert [a.payment_id for a in attempts] == ["pay_n"] and attempts[0].status == "failed"
+```
+
+Expected after Task 8: `7 passed`. Running totals become **73** after Task 10 and **78** after Task 12; Task 12 step 4 and the README's "77 offline tests" become 78.
+
+### Task 9 changes
+
+- Ollama's OpenAI-compatibility layer does not support `tool_choice`; `"auto"` is the default anyway. In `LLMAgent.propose`, call `self.client.chat.completions.create(model=self.model, messages=messages, tools=TOOLS)` with **no** `tool_choice` argument.
+- openai 3.x tool calls are a union of function and custom tool calls. Inside the `for tc in msg.tool_calls:` loop, first do `if getattr(tc, "type", "function") != "function": continue`, and build the assistant `tool_calls` list only from function-type calls.
+- Installed openai is 3.7.0; `OpenAI(base_url=..., api_key=...)` and `chat.completions.create(model, messages, tools)` were verified present on that version.
+
+### Task 13 changes
+
+Step 2's fallback paragraph is obsolete: the Payments-API lookup is now the primary path. The smoke test (Task 0 step 7) should show the failed attempt as a `PAYMENT:` entry; note in the build log which field (`order_id` and/or `notes.payment_id`) matched.
+
+### Task 14 changes
+
+- README "Test-mode caveats": replace the webhooks bullet with: "**No webhooks** (they need a public URL); the executor polls the Payment Link for capture and the Payments API for failed attempts, matched by the link's order id or the mandate id in its notes."
+- README and `.env.example` Groq model is `openai/gpt-oss-120b` (Groq shut down `llama-3.3-70b-versatile` in August 2026).
+- README test count: 78.
