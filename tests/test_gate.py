@@ -2,8 +2,8 @@ import pytest
 
 from mandatemesh.crypto import Envelope, sign
 from mandatemesh.fixtures import (
-    AGENT_ID, HAPPY_ITEMS, MERCHANT_ID, STEPUP_ITEMS, happy_chain, make_gate_input, make_intent, make_proposal,
-    make_stepup, make_world, resign_cart,
+    AGENT_ID, HAPPY_ITEMS, MERCHANT_ID, PLANNER_ID, STEPUP_ITEMS, delegated_chain, happy_chain, make_gate_input, make_intent,
+    make_proposal, make_stepup, make_sub, make_world, resign_cart,
 )
 from mandatemesh.gate import ALLOW, DENY, STEP_UP, PolicyGate
 from mandatemesh.mandates import AgentProposal, ProposalItem, new_id
@@ -263,3 +263,132 @@ def test_r99_internal_error_is_a_deny_with_trail(w):
     d = w.gate.evaluate(gi)
     assert (d.verdict, d.rule_id) == (DENY, "R99_GATE_ERROR")
     assert [c.rule_id for c in d.checks][:1] == ["R00_WELL_FORMED"] and d.checks[-1].rule_id == "R99_GATE_ERROR"
+
+
+# --- Part II: delegation chains (R18, R19) ---
+
+
+def check(d, rule_id):
+    return next(c for c in d.checks if c.rule_id == rule_id)
+
+
+def test_delegated_happy_path_allows(w):
+    intent, sub, proposal, cart = delegated_chain(w)
+    d = decide(w, intent, proposal, cart, chain=[sub])
+    assert d.verdict == ALLOW
+    assert check(d, "R18_DELEGATION_CHAIN").passed and "planner-01 -> shopper-01" in check(d, "R18_DELEGATION_CHAIN").detail
+    assert check(d, "R19_DELEGATION_SUBSET").passed
+
+
+def test_undelegated_trail_has_nineteen_checks(w):
+    d = decide(w, *happy_chain(w))
+    assert d.verdict == ALLOW and len(d.checks) == 19
+    assert check(d, "R18_DELEGATION_CHAIN").passed and "no delegation" in check(d, "R18_DELEGATION_CHAIN").detail
+    assert check(d, "R19_DELEGATION_SUBSET").passed
+
+
+def test_r18_delegator_not_registered(w):
+    intent, sub, proposal, cart = delegated_chain(w)
+    r2 = AgentRegistry()
+    r2.register(AGENT_ID, w.keys.pub("agent"))
+    w.gate = PolicyGate(r2)
+    d = decide(w, intent, proposal, cart, chain=[sub])
+    assert (d.verdict, d.rule_id) == (DENY, "R18_DELEGATION_CHAIN")
+    assert "not an active registered agent" in d.reason
+
+
+def test_r18_delegator_revoked(w):
+    intent, sub, proposal, cart = delegated_chain(w)
+    w.registry.revoke(PLANNER_ID)
+    d = decide(w, intent, proposal, cart, chain=[sub])
+    assert (d.verdict, d.rule_id) == (DENY, "R18_DELEGATION_CHAIN")
+
+
+def test_r18_sub_signed_by_wrong_key(w):
+    intent, sub, proposal, cart = delegated_chain(w, delegator_key=w.keys.merchant)
+    d = decide(w, intent, proposal, cart, chain=[sub])
+    assert (d.verdict, d.rule_id) == (DENY, "R18_DELEGATION_CHAIN")
+    assert "does not verify" in d.reason
+
+
+def test_r18_wrong_parent_id(w):
+    intent, sub, proposal, cart = delegated_chain(w, parent_id="im_other")
+    d = decide(w, intent, proposal, cart, chain=[sub])
+    assert (d.verdict, d.rule_id) == (DENY, "R18_DELEGATION_CHAIN")
+    assert "is not the previous link" in d.reason
+
+
+def test_r18_delegator_is_not_parents_agent(w):
+    intent = make_intent(w)  # delegates straight to shopper-01, so the planner has nothing to narrow
+    sub = make_sub(w, intent)  # ...but signs a sub-mandate anyway
+    proposal = make_proposal(w, intent)
+    d = decide(w, intent, proposal, w.merchant.quote(proposal), chain=[sub])
+    assert (d.verdict, d.rule_id) == (DENY, "R18_DELEGATION_CHAIN")
+    assert "is not the previous link's agent" in d.reason
+
+
+def test_r19_total_cap_over_parent(w):
+    intent, sub, proposal, cart = delegated_chain(w, max_total_paise=500_000)
+    d = decide(w, intent, proposal, cart, chain=[sub])
+    assert (d.verdict, d.rule_id) == (DENY, "R19_DELEGATION_SUBSET")
+    assert "5,000.00" in d.reason and "2,000.00" in d.reason
+
+
+def test_r19_per_txn_over_parent(w):
+    intent, sub, proposal, cart = delegated_chain(w, max_per_txn_paise=200_000)
+    d = decide(w, intent, proposal, cart, chain=[sub])
+    assert (d.verdict, d.rule_id) == (DENY, "R19_DELEGATION_SUBSET")
+
+
+def test_r19_merchant_not_in_parent(w):
+    intent, sub, proposal, cart = delegated_chain(w, merchant_allowlist=[MERCHANT_ID, "other-shop"])
+    d = decide(w, intent, proposal, cart, chain=[sub])
+    assert (d.verdict, d.rule_id) == (DENY, "R19_DELEGATION_SUBSET")
+    assert "other-shop" in d.reason
+
+
+def test_r19_category_not_in_parent(w):
+    intent, sub, proposal, cart = delegated_chain(w, categories=["groceries", "electronics"])
+    d = decide(w, intent, proposal, cart, chain=[sub])
+    assert (d.verdict, d.rule_id) == (DENY, "R19_DELEGATION_SUBSET")
+    assert "electronics" in d.reason
+
+
+def test_r19_expiry_later_than_parent(w):
+    intent = make_intent(w, agent_id=PLANNER_ID)
+    sub = make_sub(w, intent, expires_at=intent.payload["expires_at"] + 1)
+    proposal = make_proposal(w, intent)
+    d = decide(w, intent, proposal, w.merchant.quote(proposal), chain=[sub])
+    assert (d.verdict, d.rule_id) == (DENY, "R19_DELEGATION_SUBSET")
+    assert "later than the parent" in d.reason
+
+
+def test_r19_expired_sub(w):
+    intent, sub, proposal, cart = delegated_chain(w, expires_at=w.now)
+    d = decide(w, intent, proposal, cart, chain=[sub])
+    assert (d.verdict, d.rule_id) == (DENY, "R19_DELEGATION_SUBSET")
+    assert "expired" in d.reason
+
+
+def test_r06_proposal_from_planner_not_leaf(w):
+    intent = make_intent(w, agent_id=PLANNER_ID)
+    sub = make_sub(w, intent)
+    payload = AgentProposal(new_id("ap"), PLANNER_ID, intent.payload["intent_id"], MERCHANT_ID, list(HAPPY_ITEMS), "planner buying directly", w.now).to_payload()
+    proposal = sign(payload, w.keys.planner, f"agent:{PLANNER_ID}")
+    d = decide(w, intent, proposal, w.merchant.quote(proposal), chain=[sub])
+    assert (d.verdict, d.rule_id) == (DENY, "R06_INTENT_AGENT_MATCH")
+    assert "'shopper-01'" in d.reason and "'planner-01'" in d.reason
+
+
+def test_r14_sub_cap_requests_step_up_naming_the_link(w):
+    intent, sub, proposal, cart = delegated_chain(w, max_per_txn_paise=50_000)
+    d = decide(w, intent, proposal, cart, chain=[sub])
+    assert (d.verdict, d.rule_id) == (STEP_UP, "R14_PER_TXN_CAP")
+    assert "'shopper-01'" in d.reason and "910.00" in d.reason and "500.00" in d.reason
+
+
+def test_r15_sub_total_cap_with_prior_spend(w):
+    intent, sub, proposal, cart = delegated_chain(w, max_total_paise=100_000)
+    d = decide(w, intent, proposal, cart, chain=[sub], spent_by={sub.payload["sub_id"]: 60_000})
+    assert (d.verdict, d.rule_id) == (STEP_UP, "R15_TOTAL_CAP")
+    assert "'shopper-01'" in d.reason and "600.00" in d.reason and "1,000.00" in d.reason

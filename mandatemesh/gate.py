@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 
 from mandatemesh.crypto import Envelope, verify
-from mandatemesh.mandates import AgentProposal, CartMandate, IntentMandate, MalformedMandate, StepUpToken
+from mandatemesh.mandates import AgentProposal, CartMandate, IntentMandate, MalformedMandate, StepUpToken, SubMandate
 from mandatemesh.registry import ACTIVE, AgentRegistry
 
 ALLOW = "ALLOW"
@@ -40,11 +40,32 @@ class GateInput:
     spent_paise: int
     now: int
     stepup: Envelope | None = None
+    chain: list[Envelope] = field(default_factory=list)  # sub-mandates, root-first, leaf last; empty when undelegated
+    spent_by: dict[str, int] = field(default_factory=dict)  # spend per sub_id; spent_paise stays the root intent's
 
 
 def rupees(paise: int) -> str:
     sign, mag = ("-" if paise < 0 else ""), abs(paise)
     return f"INR {sign}{mag // 100:,}.{mag % 100:02d}"
+
+
+@dataclass
+class _Bound:
+    """The spending bounds one link of the mandate chain grants, whether it is the root intent or a sub-mandate."""
+
+    id: str
+    agent_id: str
+    currency: str
+    max_total_paise: int
+    max_per_txn_paise: int
+    merchant_allowlist: list[str]
+    categories: list[str]
+    expires_at: int
+
+
+def _bound_of(m: IntentMandate | SubMandate) -> _Bound:
+    return _Bound(getattr(m, "intent_id", None) or m.sub_id, m.agent_id, m.currency, m.max_total_paise, m.max_per_txn_paise,
+                  list(m.merchant_allowlist), list(m.categories), m.expires_at)
 
 
 class PolicyGate:
@@ -72,9 +93,11 @@ class PolicyGate:
             proposal = AgentProposal.from_payload(gi.proposal.payload)
             intent = IntentMandate.from_payload(gi.intent.payload)
             cart = CartMandate.from_payload(gi.cart.payload)
+            subs = [SubMandate.from_payload(e.payload) for e in gi.chain]
         except MalformedMandate as exc:
             return fail("R00_WELL_FORMED", f"malformed mandate: {str(exc)[:200]}")
-        ok("R00_WELL_FORMED", "intent, proposal and cart payloads are well-formed")
+        ok("R00_WELL_FORMED", f"intent, proposal, cart and {len(subs)} sub-mandate payloads are well-formed" if subs
+           else "intent, proposal and cart payloads are well-formed")
 
         rec = self.registry.get(proposal.agent_id)
         if rec is None:
@@ -97,8 +120,43 @@ class PolicyGate:
             return fail("R05_INTENT_NOT_EXPIRED", f"intent expired at {intent.expires_at}; now is {gi.now}")
         ok("R05_INTENT_NOT_EXPIRED", f"intent valid until {intent.expires_at}")
 
-        if proposal.agent_id != intent.agent_id:
-            return fail("R06_INTENT_AGENT_MATCH", f"intent delegates to {intent.agent_id!r} but proposal is from {proposal.agent_id!r}")
+        # R18/R19: walk the delegation chain root-first. Each link must be signed by the previous link's agent and may
+        # only narrow what that link granted, so the leaf's bounds are a subset of every ancestor's.
+        links: list[_Bound] = [_bound_of(intent)]
+        if not subs:
+            ok("R18_DELEGATION_CHAIN", "no delegation: proposal is under the root mandate")
+            ok("R19_DELEGATION_SUBSET", "no delegation: nothing to narrow")
+        for i, (env, sub) in enumerate(zip(gi.chain, subs)):
+            parent = links[-1]
+            rec = self.registry.get(sub.delegator_id)
+            if rec is None or rec.status != ACTIVE:
+                return fail("R18_DELEGATION_CHAIN", f"link {i}: delegator {sub.delegator_id!r} is not an active registered agent")
+            if not verify(env, rec.pubkey_b64):
+                return fail("R18_DELEGATION_CHAIN", f"link {i}: sub-mandate signature does not verify against {sub.delegator_id!r}")
+            if sub.parent_id != parent.id:
+                return fail("R18_DELEGATION_CHAIN", f"link {i}: parent_id {sub.parent_id!r} is not the previous link {parent.id!r}")
+            if sub.delegator_id != parent.agent_id:
+                return fail("R18_DELEGATION_CHAIN", f"link {i}: delegator {sub.delegator_id!r} is not the previous link's agent {parent.agent_id!r}")
+            if sub.currency != parent.currency:
+                return fail("R19_DELEGATION_SUBSET", f"link {i}: currency {sub.currency} != parent {parent.currency}")
+            if sub.max_total_paise > parent.max_total_paise or sub.max_per_txn_paise > parent.max_per_txn_paise:
+                return fail("R19_DELEGATION_SUBSET", f"link {i}: caps {rupees(sub.max_total_paise)}/{rupees(sub.max_per_txn_paise)} exceed parent {rupees(parent.max_total_paise)}/{rupees(parent.max_per_txn_paise)}")
+            if not set(sub.merchant_allowlist) <= set(parent.merchant_allowlist):
+                return fail("R19_DELEGATION_SUBSET", f"link {i}: merchants {sorted(set(sub.merchant_allowlist) - set(parent.merchant_allowlist))} are not in the parent's allow-list")
+            if not set(sub.categories) <= set(parent.categories):
+                return fail("R19_DELEGATION_SUBSET", f"link {i}: categories {sorted(set(sub.categories) - set(parent.categories))} are not in the parent's categories")
+            if sub.expires_at > parent.expires_at:
+                return fail("R19_DELEGATION_SUBSET", f"link {i}: expires_at {sub.expires_at} is later than the parent's {parent.expires_at}")
+            if gi.now >= sub.expires_at:
+                return fail("R19_DELEGATION_SUBSET", f"link {i}: sub-mandate expired at {sub.expires_at}")
+            links.append(_bound_of(sub))
+        if subs:
+            ok("R18_DELEGATION_CHAIN", f"{len(subs)}-link delegation chain verified: " + " -> ".join(b.agent_id for b in links))
+            ok("R19_DELEGATION_SUBSET", "every link narrows or equals its parent")
+        leaf = links[-1]
+
+        if proposal.agent_id != leaf.agent_id:
+            return fail("R06_INTENT_AGENT_MATCH", f"mandate chain delegates to {leaf.agent_id!r} but proposal is from {proposal.agent_id!r}")
         ok("R06_INTENT_AGENT_MATCH", "proposal comes from the delegated agent")
 
         merchant_pub = gi.merchant_pubs.get(cart.merchant_id)
@@ -136,17 +194,17 @@ class PolicyGate:
             return fail("R11_CART_MATCHES_PROPOSAL", f"cart lines {cart_lines} differ from proposed lines {proposal_lines}")
         ok("R11_CART_MATCHES_PROPOSAL", "cart items match the agent's proposal")
 
-        if cart.merchant_id not in intent.merchant_allowlist:
-            return fail("R12_MERCHANT_ALLOWED", f"merchant {cart.merchant_id!r} is not in the allow-list {intent.merchant_allowlist}")
+        if cart.merchant_id not in leaf.merchant_allowlist:
+            return fail("R12_MERCHANT_ALLOWED", f"merchant {cart.merchant_id!r} is not in the allow-list {leaf.merchant_allowlist}")
         ok("R12_MERCHANT_ALLOWED", f"merchant {cart.merchant_id!r} is allow-listed")
 
-        bad = sorted({i.category for i in cart.items} - set(intent.categories))
+        bad = sorted({i.category for i in cart.items} - set(leaf.categories))
         if bad:
-            return fail("R13_CATEGORY_ALLOWED", f"categories {bad} are not permitted by the mandate {intent.categories}")
+            return fail("R13_CATEGORY_ALLOWED", f"categories {bad} are not permitted by the mandate {leaf.categories}")
         ok("R13_CATEGORY_ALLOWED", "all item categories are permitted")
 
-        if cart.currency != intent.currency:
-            return fail("R17_CURRENCY_MATCH", f"cart currency {cart.currency} != mandate currency {intent.currency}")
+        if cart.currency != leaf.currency:
+            return fail("R17_CURRENCY_MATCH", f"cart currency {cart.currency} != mandate currency {leaf.currency}")
         ok("R17_CURRENCY_MATCH", f"currency {cart.currency}")
 
         stepup_ok: bool | None = None
@@ -154,26 +212,34 @@ class PolicyGate:
         if gi.stepup is not None:
             stepup_ok, stepup_detail = self._check_stepup(gi, intent, cart)
 
-        if cart.total_paise > intent.max_per_txn_paise:
-            detail = f"cart {rupees(cart.total_paise)} exceeds the per-transaction cap {rupees(intent.max_per_txn_paise)}"
-            if gi.stepup is None:
-                return fail("R14_PER_TXN_CAP", detail + "; human step-up required", STEP_UP)
-            if not stepup_ok:
-                return fail("R16_STEPUP_TOKEN_VALID", stepup_detail)
-            ok("R14_PER_TXN_CAP", detail + "; covered by step-up approval")
-        else:
-            ok("R14_PER_TXN_CAP", f"cart {rupees(cart.total_paise)} is within the per-transaction cap {rupees(intent.max_per_txn_paise)}")
+        # R14/R15 hold against every link, root first: the root's spend is spent_paise, each sub-mandate's is spent_by[sub_id].
+        # One check per rule is recorded, naming the root-most link that breached it, or the tightest link when none did.
+        def spent_under(b: _Bound) -> int:
+            return gi.spent_paise if b is links[0] else gi.spent_by.get(b.id, 0)
 
-        projected = gi.spent_paise + cart.total_paise
-        if projected > intent.max_total_paise:
-            detail = f"spent {rupees(gi.spent_paise)} + cart {rupees(cart.total_paise)} exceeds the total cap {rupees(intent.max_total_paise)}"
-            if gi.stepup is None:
-                return fail("R15_TOTAL_CAP", detail + "; human step-up required", STEP_UP)
-            if not stepup_ok:
+        total = cart.total_paise
+        breach: dict[str, str] = {}
+        for b in links:
+            spent = spent_under(b)
+            if "R14_PER_TXN_CAP" not in breach and total > b.max_per_txn_paise:
+                breach["R14_PER_TXN_CAP"] = f"link {b.agent_id!r}: cart {rupees(total)} exceeds the per-transaction cap {rupees(b.max_per_txn_paise)}"
+            if "R15_TOTAL_CAP" not in breach and spent + total > b.max_total_paise:
+                breach["R15_TOTAL_CAP"] = f"link {b.agent_id!r}: spent {rupees(spent)} + cart {rupees(total)} exceeds the total cap {rupees(b.max_total_paise)}"
+        tight_txn = min(links, key=lambda b: b.max_per_txn_paise)
+        tight_total = min(links, key=lambda b: b.max_total_paise - spent_under(b))
+        within = (
+            ("R14_PER_TXN_CAP", f"cart {rupees(total)} is within every per-transaction cap (tightest: {tight_txn.agent_id!r} {rupees(tight_txn.max_per_txn_paise)})"),
+            ("R15_TOTAL_CAP", f"projected spend {rupees(spent_under(tight_total) + total)} is within every total cap (tightest: {tight_total.agent_id!r} {rupees(tight_total.max_total_paise)})"),
+        )
+        for rule, within_detail in within:
+            if rule not in breach:
+                ok(rule, within_detail)
+            elif gi.stepup is None:
+                return fail(rule, breach[rule] + "; human step-up required", STEP_UP)
+            elif not stepup_ok:
                 return fail("R16_STEPUP_TOKEN_VALID", stepup_detail)
-            ok("R15_TOTAL_CAP", detail + "; covered by step-up approval")
-        else:
-            ok("R15_TOTAL_CAP", f"projected spend {rupees(projected)} is within the total cap {rupees(intent.max_total_paise)}")
+            else:
+                ok(rule, breach[rule] + "; covered by step-up approval")
 
         if gi.stepup is not None:
             if not stepup_ok:

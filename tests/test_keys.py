@@ -4,11 +4,11 @@ from mandatemesh.crypto import public_b64
 from mandatemesh.keys import ROLES, Keys
 
 
-def test_generate_has_four_distinct_roles():
+def test_generate_has_five_distinct_roles():
     k = Keys.generate()
     pubs = {k.pub(r) for r in ROLES}
-    assert ROLES == ("user", "agent", "merchant", "gate")
-    assert len(pubs) == 4
+    assert ROLES == ("user", "agent", "merchant", "gate", "planner")
+    assert len(pubs) == 5
 
 
 def test_save_and_load_round_trip(tmp_path):

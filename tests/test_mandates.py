@@ -12,6 +12,7 @@ from mandatemesh.mandates import (
     PaymentMandate,
     ProposalItem,
     StepUpToken,
+    SubMandate,
     new_id,
 )
 
@@ -47,6 +48,14 @@ def test_stepup_and_payment_round_trip():
     p = PaymentMandate("pm_1", "im_1", "cm_1", 180_000, "INR", 100)
     assert StepUpToken.from_payload(s.to_payload()) == s
     assert PaymentMandate.from_payload(p.to_payload()) == p
+
+
+def test_sub_mandate_round_trip_and_strict_shape():
+    s = SubMandate("sm_1", "im_1", "planner-01", "shopper-01", "INR", 100_000, 100_000, ["kirana-one"], ["groceries"], 100, 200, "n_1")
+    assert SubMandate.from_payload(s.to_payload()) == s
+    assert s.to_payload()["parent_id"] == "im_1"
+    with pytest.raises(MalformedMandate, match=r"SubMandate: unknown keys \['extra'\]"):
+        SubMandate.from_payload({**s.to_payload(), "extra": 1})
 
 
 def test_from_payload_rejects_unknown_and_missing_keys():

@@ -1,4 +1,4 @@
-"""The four signing identities. Private keys never leave this process; the agent gets only its own."""
+"""The five signing identities. Private keys never leave this process; each agent gets only its own."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from mandatemesh.crypto import generate_private_key, load_private_key, public_b64, save_private_key
 
-ROLES = ("user", "agent", "merchant", "gate")
+ROLES = ("user", "agent", "merchant", "gate", "planner")
 
 
 @dataclass
@@ -17,6 +17,7 @@ class Keys:
     agent: Ed25519PrivateKey
     merchant: Ed25519PrivateKey
     gate: Ed25519PrivateKey
+    planner: Ed25519PrivateKey
 
     @classmethod
     def generate(cls) -> "Keys":

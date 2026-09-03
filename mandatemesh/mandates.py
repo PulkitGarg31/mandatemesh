@@ -163,3 +163,28 @@ class PaymentMandate:
     @classmethod
     def from_payload(cls, p: dict) -> "PaymentMandate":
         return _parse(cls, p, cls.__name__)
+
+
+@dataclass
+class SubMandate:
+    """Signed by the delegator agent. Narrows a parent mandate for one delegate agent."""
+
+    sub_id: str
+    parent_id: str
+    delegator_id: str
+    agent_id: str
+    currency: str
+    max_total_paise: int
+    max_per_txn_paise: int
+    merchant_allowlist: list[str]
+    categories: list[str]
+    issued_at: int
+    expires_at: int
+    nonce: str
+
+    def to_payload(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_payload(cls, p: dict) -> "SubMandate":
+        return _parse(cls, p, cls.__name__)
