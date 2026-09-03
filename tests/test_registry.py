@@ -1,3 +1,5 @@
+import pytest
+
 from mandatemesh.registry import ACTIVE, REVOKED, AgentRegistry
 
 
@@ -19,6 +21,17 @@ def test_revoke_flips_status_and_keeps_key():
     r = AgentRegistry()
     r.register("shopper-01", "PUBKEY")
     r.revoke("shopper-01")
+    assert r.get("shopper-01").status == REVOKED
+    assert r.get("shopper-01").pubkey_b64 == "PUBKEY"
+    assert not r.is_active("shopper-01")
+
+
+def test_reregister_after_revoke_is_refused():
+    r = AgentRegistry()
+    r.register("shopper-01", "PUBKEY")
+    r.revoke("shopper-01")
+    with pytest.raises(ValueError, match="revocation is permanent"):
+        r.register("shopper-01", "NEWKEY")
     assert r.get("shopper-01").status == REVOKED
     assert r.get("shopper-01").pubkey_b64 == "PUBKEY"
     assert not r.is_active("shopper-01")

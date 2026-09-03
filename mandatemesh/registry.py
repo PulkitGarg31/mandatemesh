@@ -19,6 +19,9 @@ class AgentRegistry:
         self._agents: dict[str, AgentRecord] = {}
 
     def register(self, agent_id: str, pubkey_b64: str) -> AgentRecord:
+        existing = self._agents.get(agent_id)
+        if existing is not None and existing.status == REVOKED:
+            raise ValueError(f"agent '{agent_id}' is revoked; revocation is permanent in this registry")
         rec = AgentRecord(agent_id=agent_id, pubkey_b64=pubkey_b64)
         self._agents[agent_id] = rec
         return rec
