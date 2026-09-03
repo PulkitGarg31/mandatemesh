@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from mandatemesh.crypto import (
     Envelope,
     canonical_json,
@@ -50,3 +54,37 @@ def test_key_file_round_trip(tmp_path):
     key = generate_private_key()
     save_private_key(key, tmp_path / "sub" / "k.key")
     assert public_b64(load_private_key(tmp_path / "sub" / "k.key")) == public_b64(key)
+
+
+def test_signer_is_bound_into_signature():
+    key = generate_private_key()
+    env = sign({"x": 1}, key, "user")
+    relabelled = Envelope(payload=env.payload, signer="attacker", sig=env.sig)
+    assert not verify(relabelled, public_b64(key))
+
+
+def test_json_text_round_trip_with_nested_unicode_payload():
+    key = generate_private_key()
+    env = sign({"items": [{"sku": "RICE5", "qty": 2}], "note": "chai ☕", "ok": True, "none": None}, key, "merchant:kirana-one")
+    wire = json.loads(json.dumps(env.to_dict()))
+    assert verify(Envelope.from_dict(wire), public_b64(key))
+
+
+def test_malleable_signature_encodings_are_rejected():
+    key = generate_private_key()
+    env = sign({"x": 1}, key, "user")
+    pub = public_b64(key)
+    for bad in (env.sig + "=", env.sig + "\n", env.sig.replace("_", "/") if "_" in env.sig else env.sig + "+", "!!" + env.sig):
+        assert not verify(Envelope(payload=env.payload, signer=env.signer, sig=bad), pub)
+
+
+def test_wrong_length_public_key_fails_closed():
+    key = generate_private_key()
+    env = sign({"x": 1}, key, "user")
+    assert not verify(env, public_b64(key)[:-4])
+    assert not verify(env, "")
+
+
+def test_canonical_json_rejects_nan():
+    with pytest.raises(ValueError):
+        canonical_json({"a": float("nan")})
