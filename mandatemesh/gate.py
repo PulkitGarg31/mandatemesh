@@ -19,6 +19,7 @@ from mandatemesh.registry import ACTIVE, AgentRegistry
 ALLOW = "ALLOW"
 DENY = "DENY"
 STEP_UP = "STEP_UP"
+MAX_DELEGATION_LINKS = 8
 
 
 @dataclass
@@ -88,7 +89,8 @@ class _Bound:
 
 
 def _bound_of(m: IntentMandate | SubMandate) -> _Bound:
-    return _Bound(getattr(m, "intent_id", None) or m.sub_id, m.agent_id, m.currency, m.max_total_paise, m.max_per_txn_paise,
+    id_ = m.sub_id if isinstance(m, SubMandate) else m.intent_id
+    return _Bound(id_, m.agent_id, m.currency, m.max_total_paise, m.max_per_txn_paise,
                   list(m.merchant_allowlist), list(m.categories), m.expires_at)
 
 
@@ -144,39 +146,51 @@ class PolicyGate:
             return fail("R05_INTENT_NOT_EXPIRED", f"intent expired at {intent.expires_at}; now is {gi.now}")
         ok("R05_INTENT_NOT_EXPIRED", f"intent valid until {intent.expires_at}")
 
-        # R18/R19: walk the delegation chain root-first. Each link must be signed by the previous link's agent and may
-        # only narrow what that link granted, so the leaf's bounds are a subset of every ancestor's.
+        # R18, pass one: walk the delegation chain root-first and check only its shape -- each link signed by the previous
+        # link's agent, parented to it, and no id repeated -- so a later R19 denial still leaves a recorded R18 verdict.
         links: list[_Bound] = [_bound_of(intent)]
-        if not subs:
-            ok("R18_DELEGATION_CHAIN", "no delegation: proposal is under the root mandate")
-            ok("R19_DELEGATION_SUBSET", "no delegation: nothing to narrow")
+        if len(subs) > MAX_DELEGATION_LINKS:
+            return fail("R18_DELEGATION_CHAIN", f"delegation chain of {len(subs)} links exceeds the maximum of {MAX_DELEGATION_LINKS}")
+        seen_ids = {links[0].id}
         for i, (env, sub) in enumerate(zip(gi.chain, subs)):
             parent = links[-1]
             rec = self.registry.get(sub.delegator_id)
             if rec is None or rec.status != ACTIVE:
-                return fail("R18_DELEGATION_CHAIN", f"link {i}: delegator {sub.delegator_id!r} is not an active registered agent")
+                return fail("R18_DELEGATION_CHAIN", f"link {i} ({sub.agent_id!r}): delegator {sub.delegator_id!r} is not an active registered agent")
             if not verify(env, rec.pubkey_b64):
-                return fail("R18_DELEGATION_CHAIN", f"link {i}: sub-mandate signature does not verify against {sub.delegator_id!r}")
+                return fail("R18_DELEGATION_CHAIN", f"link {i} ({sub.agent_id!r}): sub-mandate signature does not verify against {sub.delegator_id!r}")
             if sub.parent_id != parent.id:
-                return fail("R18_DELEGATION_CHAIN", f"link {i}: parent_id {sub.parent_id!r} is not the previous link {parent.id!r}")
+                return fail("R18_DELEGATION_CHAIN", f"link {i} ({sub.agent_id!r}): parent_id {sub.parent_id!r} is not the previous link {parent.id!r}")
             if sub.delegator_id != parent.agent_id:
-                return fail("R18_DELEGATION_CHAIN", f"link {i}: delegator {sub.delegator_id!r} is not the previous link's agent {parent.agent_id!r}")
-            if sub.currency != parent.currency:
-                return fail("R19_DELEGATION_SUBSET", f"link {i}: currency {sub.currency} != parent {parent.currency}")
-            if sub.max_total_paise > parent.max_total_paise or sub.max_per_txn_paise > parent.max_per_txn_paise:
-                return fail("R19_DELEGATION_SUBSET", f"link {i}: caps {rupees(sub.max_total_paise)}/{rupees(sub.max_per_txn_paise)} exceed parent {rupees(parent.max_total_paise)}/{rupees(parent.max_per_txn_paise)}")
-            if not set(sub.merchant_allowlist) <= set(parent.merchant_allowlist):
-                return fail("R19_DELEGATION_SUBSET", f"link {i}: merchants {sorted(set(sub.merchant_allowlist) - set(parent.merchant_allowlist))} are not in the parent's allow-list")
-            if not set(sub.categories) <= set(parent.categories):
-                return fail("R19_DELEGATION_SUBSET", f"link {i}: categories {sorted(set(sub.categories) - set(parent.categories))} are not in the parent's categories")
-            if sub.expires_at > parent.expires_at:
-                return fail("R19_DELEGATION_SUBSET", f"link {i}: expires_at {sub.expires_at} is later than the parent's {parent.expires_at}")
-            if gi.now >= sub.expires_at:
-                return fail("R19_DELEGATION_SUBSET", f"link {i}: sub-mandate expired at {sub.expires_at}")
+                return fail("R18_DELEGATION_CHAIN", f"link {i} ({sub.agent_id!r}): delegator {sub.delegator_id!r} is not the previous link's agent {parent.agent_id!r}")
+            if sub.sub_id in seen_ids:
+                return fail("R18_DELEGATION_CHAIN", f"link {i} ({sub.agent_id!r}): sub_id {sub.sub_id!r} repeats an earlier link")
+            seen_ids.add(sub.sub_id)
             links.append(_bound_of(sub))
         if subs:
-            ok("R18_DELEGATION_CHAIN", f"{len(subs)}-link delegation chain verified: " + " -> ".join(b.agent_id for b in links))
-            ok("R19_DELEGATION_SUBSET", "every link narrows or equals its parent")
+            summary = " -> ".join(b.agent_id for b in links)
+            if len(summary) > 200:
+                summary = f"{links[0].agent_id!r} -> ... -> {links[-1].agent_id!r}"
+            ok("R18_DELEGATION_CHAIN", f"{len(subs)}-link delegation chain verified: {summary}")
+        else:
+            ok("R18_DELEGATION_CHAIN", "no delegation: proposal is under the root mandate")
+
+        # R19, pass two: a link may only narrow what its parent granted, so the leaf's bounds are a subset of every ancestor's.
+        for i, sub in enumerate(subs):
+            parent = links[i]
+            if sub.currency != parent.currency:
+                return fail("R19_DELEGATION_SUBSET", f"link {i} ({sub.agent_id!r}): currency {sub.currency} != parent {parent.currency}")
+            if sub.max_total_paise > parent.max_total_paise or sub.max_per_txn_paise > parent.max_per_txn_paise:
+                return fail("R19_DELEGATION_SUBSET", f"link {i} ({sub.agent_id!r}): caps {rupees(sub.max_total_paise)}/{rupees(sub.max_per_txn_paise)} exceed parent {rupees(parent.max_total_paise)}/{rupees(parent.max_per_txn_paise)}")
+            if not set(sub.merchant_allowlist) <= set(parent.merchant_allowlist):
+                return fail("R19_DELEGATION_SUBSET", f"link {i} ({sub.agent_id!r}): merchants {sorted(set(sub.merchant_allowlist) - set(parent.merchant_allowlist))} are not in the parent's allow-list")
+            if not set(sub.categories) <= set(parent.categories):
+                return fail("R19_DELEGATION_SUBSET", f"link {i} ({sub.agent_id!r}): categories {sorted(set(sub.categories) - set(parent.categories))} are not in the parent's categories")
+            if sub.expires_at > parent.expires_at:
+                return fail("R19_DELEGATION_SUBSET", f"link {i} ({sub.agent_id!r}): expires_at {sub.expires_at} is later than the parent's {parent.expires_at}")
+            if gi.now >= sub.expires_at:
+                return fail("R19_DELEGATION_SUBSET", f"link {i} ({sub.agent_id!r}): sub-mandate expired at {sub.expires_at}")
+        ok("R19_DELEGATION_SUBSET", "every link narrows or equals its parent" if subs else "no delegation: nothing to narrow")
         leaf = links[-1]
 
         if proposal.agent_id != leaf.agent_id:
@@ -246,9 +260,9 @@ class PolicyGate:
         for b in links:
             spent = spent_under(b)
             if "R14_PER_TXN_CAP" not in breach and total > b.max_per_txn_paise:
-                breach["R14_PER_TXN_CAP"] = f"link {b.agent_id!r}: cart {rupees(total)} exceeds the per-transaction cap {rupees(b.max_per_txn_paise)}"
+                breach["R14_PER_TXN_CAP"] = f"first breach root-first: link {b.agent_id!r}: cart {rupees(total)} exceeds the per-transaction cap {rupees(b.max_per_txn_paise)}"
             if "R15_TOTAL_CAP" not in breach and spent + total > b.max_total_paise:
-                breach["R15_TOTAL_CAP"] = f"link {b.agent_id!r}: spent {rupees(spent)} + cart {rupees(total)} exceeds the total cap {rupees(b.max_total_paise)}"
+                breach["R15_TOTAL_CAP"] = f"first breach root-first: link {b.agent_id!r}: spent {rupees(spent)} + cart {rupees(total)} exceeds the total cap {rupees(b.max_total_paise)}"
         tight_txn = min(links, key=lambda b: b.max_per_txn_paise)
         tight_total = min(links, key=lambda b: b.max_total_paise - spent_under(b))
         within = (

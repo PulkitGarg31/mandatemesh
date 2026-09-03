@@ -514,3 +514,42 @@ def test_rf99_internal_error_is_a_deny_with_trail(w):
     d = w.gate.evaluate_refund(ri)
     assert (d.verdict, d.rule_id) == (DENY, "RF99_GATE_ERROR")
     assert [c.rule_id for c in d.checks] == ["RF00_WELL_FORMED", "RF99_GATE_ERROR"]
+
+
+def test_r18_pass_is_recorded_even_when_r19_denies(w):
+    intent, sub, proposal, cart = delegated_chain(w, max_total_paise=500_000, max_per_txn_paise=500_000)
+    d = decide(w, intent, proposal, cart, chain=[sub])
+    assert (d.verdict, d.rule_id) == (DENY, "R19_DELEGATION_SUBSET")
+    r18 = [c for c in d.checks if c.rule_id == "R18_DELEGATION_CHAIN"]
+    assert len(r18) == 1 and r18[0].passed
+
+
+def test_r18_rejects_a_repeated_sub_id(w):
+    intent = make_intent(w, agent_id=PLANNER_ID)
+    first = make_sub(w, intent)
+    second = make_sub(w, first, parent_id=first.payload["sub_id"], sub_id=first.payload["sub_id"], delegator_id=AGENT_ID, delegator_key=w.keys.agent)
+    proposal = make_proposal(w, intent)
+    cart = w.merchant.quote(proposal)
+    d = decide(w, intent, proposal, cart, chain=[first, second])
+    assert (d.verdict, d.rule_id) == (DENY, "R18_DELEGATION_CHAIN")
+    assert "repeats an earlier link" in d.reason
+
+
+def test_r18_rejects_an_over_long_chain(w):
+    intent = make_intent(w, agent_id=PLANNER_ID)
+    chain, parent = [], intent
+    for _ in range(9):
+        s = make_sub(w, parent)
+        chain.append(s)
+        parent = s
+    proposal = make_proposal(w, intent)
+    cart = w.merchant.quote(proposal)
+    d = decide(w, intent, proposal, cart, chain=chain)
+    assert (d.verdict, d.rule_id) == (DENY, "R18_DELEGATION_CHAIN")
+    assert "exceeds the maximum" in d.reason
+
+
+def test_delegated_details_name_index_and_agent(w):
+    intent, sub, proposal, cart = delegated_chain(w, max_per_txn_paise=50_000)
+    d = decide(w, intent, proposal, cart, chain=[sub])
+    assert d.verdict == STEP_UP and "first breach root-first" in d.reason
