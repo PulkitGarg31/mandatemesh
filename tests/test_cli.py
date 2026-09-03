@@ -1,7 +1,11 @@
+import json
+
 import pytest
 
+import mandatemesh.cli as cli_mod
 from mandatemesh.cli import main
 from mandatemesh.ledger import Ledger
+from mandatemesh.merchant import DEFAULT_FEED, MockMerchant as RealMerchant
 
 
 def test_eval_command_exits_zero():
@@ -55,3 +59,18 @@ def test_run_id_must_be_a_plain_name(tmp_path, monkeypatch):
     assert main(["keys", "init"]) == 0
     with pytest.raises(SystemExit):
         main(["demo", "--scenario", "happy", "--agent", "scripted", "--executor", "fake", "--run-id", "../escape"])
+
+
+def test_bad_feed_is_a_clean_error_exit(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert main(["keys", "init"]) == 0
+    feed = json.loads(DEFAULT_FEED.read_text(encoding="utf-8"))
+    feed["items"][0]["price_paise"] = 450.0
+    bad = tmp_path / "feed.json"
+    bad.write_text(json.dumps(feed), encoding="utf-8")
+
+    def merchant_with_bad_feed(merchant_id, key):
+        return RealMerchant(merchant_id, key, feed_path=bad)
+
+    monkeypatch.setattr(cli_mod, "MockMerchant", merchant_with_bad_feed)
+    assert main(["demo", "--scenario", "happy", "--agent", "scripted", "--executor", "fake", "--run-id", "badfeed"]) == 2

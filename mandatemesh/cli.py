@@ -20,7 +20,7 @@ from mandatemesh.fixtures import AGENT_ID, MERCHANT_ID
 from mandatemesh.gate import Decision
 from mandatemesh.keys import ROLES, Keys
 from mandatemesh.ledger import Ledger, tamper
-from mandatemesh.merchant import MockMerchant
+from mandatemesh.merchant import MerchantError, MockMerchant
 from mandatemesh.orchestrator import SCENARIOS, Orchestrator, Scenario, inr
 from mandatemesh.registry import AgentRegistry
 
@@ -213,6 +213,6 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         console.print("\n[yellow]interrupted[/]")
         return 130
-    except (FileNotFoundError, KeyError, ValueError, PermissionError) as exc:
+    except (FileNotFoundError, KeyError, ValueError, PermissionError, MerchantError) as exc:
         console.print(f"[red]error:[/] {escape(str(exc.args[0] if exc.args else exc))}")
         return 2
