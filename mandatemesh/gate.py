@@ -43,7 +43,8 @@ class GateInput:
 
 
 def rupees(paise: int) -> str:
-    return f"INR {paise / 100:,.2f}"
+    sign, mag = ("-" if paise < 0 else ""), abs(paise)
+    return f"INR {sign}{mag // 100:,}.{mag % 100:02d}"
 
 
 class PolicyGate:
@@ -52,7 +53,14 @@ class PolicyGate:
 
     def evaluate(self, gi: GateInput) -> Decision:
         checks: list[Check] = []
+        try:
+            return self._evaluate(gi, checks)
+        except Exception as exc:  # the gate never raises: an internal error is a DENY, never an ALLOW
+            detail = f"internal gate error: {type(exc).__name__}"
+            checks.append(Check("R99_GATE_ERROR", False, detail))
+            return Decision(DENY, "R99_GATE_ERROR", detail, checks)
 
+    def _evaluate(self, gi: GateInput, checks: list[Check]) -> Decision:
         def ok(rule: str, detail: str) -> None:
             checks.append(Check(rule, True, detail))
 
@@ -65,16 +73,16 @@ class PolicyGate:
             intent = IntentMandate.from_payload(gi.intent.payload)
             cart = CartMandate.from_payload(gi.cart.payload)
         except MalformedMandate as exc:
-            return fail("R00_WELL_FORMED", f"malformed mandate: {exc}")
+            return fail("R00_WELL_FORMED", f"malformed mandate: {str(exc)[:200]}")
         ok("R00_WELL_FORMED", "intent, proposal and cart payloads are well-formed")
 
         rec = self.registry.get(proposal.agent_id)
         if rec is None:
-            return fail("R01_AGENT_REGISTERED", f"agent '{proposal.agent_id}' is not in the trusted-agent registry")
-        ok("R01_AGENT_REGISTERED", f"agent '{proposal.agent_id}' is registered")
+            return fail("R01_AGENT_REGISTERED", f"agent {proposal.agent_id!r} is not in the trusted-agent registry")
+        ok("R01_AGENT_REGISTERED", f"agent {proposal.agent_id!r} is registered")
 
         if rec.status != ACTIVE:
-            return fail("R02_AGENT_ACTIVE", f"AGENT_REVOKED: agent '{proposal.agent_id}' status is '{rec.status}'")
+            return fail("R02_AGENT_ACTIVE", f"AGENT_REVOKED: agent {proposal.agent_id!r} status is {rec.status!r}")
         ok("R02_AGENT_ACTIVE", "agent status is active")
 
         if not verify(gi.proposal, rec.pubkey_b64):
@@ -90,34 +98,47 @@ class PolicyGate:
         ok("R05_INTENT_NOT_EXPIRED", f"intent valid until {intent.expires_at}")
 
         if proposal.agent_id != intent.agent_id:
-            return fail("R06_INTENT_AGENT_MATCH", f"intent delegates to '{intent.agent_id}' but proposal is from '{proposal.agent_id}'")
+            return fail("R06_INTENT_AGENT_MATCH", f"intent delegates to {intent.agent_id!r} but proposal is from {proposal.agent_id!r}")
         ok("R06_INTENT_AGENT_MATCH", "proposal comes from the delegated agent")
 
         merchant_pub = gi.merchant_pubs.get(cart.merchant_id)
         if merchant_pub is None or not verify(gi.cart, merchant_pub):
-            return fail("R07_CART_SIG", f"cart signature does not verify for merchant '{cart.merchant_id}'")
-        ok("R07_CART_SIG", f"cart mandate signature verified for merchant '{cart.merchant_id}'")
+            return fail("R07_CART_SIG", f"cart signature does not verify for merchant {cart.merchant_id!r}")
+        ok("R07_CART_SIG", f"cart mandate signature verified for merchant {cart.merchant_id!r}")
 
-        if cart.intent_id != intent.intent_id or cart.proposal_id != proposal.proposal_id:
-            return fail("R08_CART_CHAIN", "cart does not reference this intent and proposal")
-        ok("R08_CART_CHAIN", "cart references this intent and this proposal")
+        if proposal.intent_id != intent.intent_id:
+            return fail("R08_CART_CHAIN", f"proposal references intent {proposal.intent_id!r}, not {intent.intent_id!r}")
+        if cart.intent_id != intent.intent_id:
+            return fail("R08_CART_CHAIN", f"cart references intent {cart.intent_id!r}, not {intent.intent_id!r}")
+        if cart.proposal_id != proposal.proposal_id:
+            return fail("R08_CART_CHAIN", f"cart references proposal {cart.proposal_id!r}, not {proposal.proposal_id!r}")
+        if proposal.merchant_id != cart.merchant_id:
+            return fail("R08_CART_CHAIN", f"proposal was addressed to {proposal.merchant_id!r} but the cart is from {cart.merchant_id!r}")
+        ok("R08_CART_CHAIN", "proposal and cart both reference this intent; cart references this proposal and merchant")
 
         if gi.now >= cart.expires_at:
             return fail("R09_CART_NOT_EXPIRED", f"cart quote expired at {cart.expires_at}; now is {gi.now}")
         ok("R09_CART_NOT_EXPIRED", f"cart quote valid until {cart.expires_at}")
 
         computed = sum(i.qty * i.unit_price_paise for i in cart.items)
-        if computed != cart.total_paise:
-            return fail("R10_CART_TOTAL_INTEGRITY", f"cart total {cart.total_paise} != sum of lines {computed}")
-        ok("R10_CART_TOTAL_INTEGRITY", f"cart total {rupees(cart.total_paise)} equals the sum of its lines")
+        bad_lines = [i.sku for i in cart.items if i.qty < 1 or i.unit_price_paise < 0]
+        if not cart.items:
+            return fail("R10_CART_TOTAL_INTEGRITY", "cart has no lines")
+        if bad_lines:
+            return fail("R10_CART_TOTAL_INTEGRITY", f"non-positive quantity or negative price on {bad_lines}")
+        if computed != cart.total_paise or cart.total_paise <= 0:
+            return fail("R10_CART_TOTAL_INTEGRITY", f"cart total {cart.total_paise} != sum of lines {computed}, or not positive")
+        ok("R10_CART_TOTAL_INTEGRITY", f"cart total {rupees(cart.total_paise)} equals the sum of {len(cart.items)} positive lines")
 
-        if sorted((i.sku, i.qty) for i in cart.items) != sorted((i.sku, i.qty) for i in proposal.items):
-            return fail("R11_CART_MATCHES_PROPOSAL", "cart items differ from what the agent proposed")
+        cart_lines = sorted((i.sku, i.qty) for i in cart.items)
+        proposal_lines = sorted((i.sku, i.qty) for i in proposal.items)
+        if cart_lines != proposal_lines:
+            return fail("R11_CART_MATCHES_PROPOSAL", f"cart lines {cart_lines} differ from proposed lines {proposal_lines}")
         ok("R11_CART_MATCHES_PROPOSAL", "cart items match the agent's proposal")
 
         if cart.merchant_id not in intent.merchant_allowlist:
-            return fail("R12_MERCHANT_ALLOWED", f"merchant '{cart.merchant_id}' is not in the allow-list {intent.merchant_allowlist}")
-        ok("R12_MERCHANT_ALLOWED", f"merchant '{cart.merchant_id}' is allow-listed")
+            return fail("R12_MERCHANT_ALLOWED", f"merchant {cart.merchant_id!r} is not in the allow-list {intent.merchant_allowlist}")
+        ok("R12_MERCHANT_ALLOWED", f"merchant {cart.merchant_id!r} is allow-listed")
 
         bad = sorted({i.category for i in cart.items} - set(intent.categories))
         if bad:

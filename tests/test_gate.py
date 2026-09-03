@@ -2,11 +2,11 @@ import pytest
 
 from mandatemesh.crypto import Envelope, sign
 from mandatemesh.fixtures import (
-    AGENT_ID, HAPPY_ITEMS, STEPUP_ITEMS, happy_chain, make_gate_input, make_intent, make_proposal,
+    AGENT_ID, HAPPY_ITEMS, MERCHANT_ID, STEPUP_ITEMS, happy_chain, make_gate_input, make_intent, make_proposal,
     make_stepup, make_world, resign_cart,
 )
 from mandatemesh.gate import ALLOW, DENY, STEP_UP, PolicyGate
-from mandatemesh.mandates import ProposalItem
+from mandatemesh.mandates import AgentProposal, ProposalItem, new_id
 from mandatemesh.registry import AgentRegistry
 
 
@@ -193,3 +193,62 @@ def test_decision_to_dict_is_json_shaped(w):
     as_dict = d.to_dict()
     assert as_dict["verdict"] == "ALLOW" and isinstance(as_dict["checks"], list)
     assert set(as_dict["checks"][0]) == {"rule_id", "passed", "detail"}
+
+
+def test_r08_proposal_references_other_intent(w):
+    intent_a, intent_b = make_intent(w), make_intent(w)
+    proposal = make_proposal(w, intent_a)
+    cart_b = resign_cart(w, w.merchant.quote(proposal), intent_id=intent_b.payload["intent_id"])
+    d = decide(w, intent_b, proposal, cart_b)
+    assert (d.verdict, d.rule_id) == (DENY, "R08_CART_CHAIN")
+    assert "proposal references intent" in d.reason
+
+
+def test_r08_proposal_addressed_to_other_merchant(w):
+    intent = make_intent(w, merchant_allowlist=[MERCHANT_ID, "other-shop"])
+    cart = w.merchant.quote(make_proposal(w, intent))
+    bad = make_proposal(w, intent, merchant_id="other-shop")
+    d = decide(w, intent, bad, resign_cart(w, cart, proposal_id=bad.payload["proposal_id"]))
+    assert (d.verdict, d.rule_id) == (DENY, "R08_CART_CHAIN")
+    assert "addressed to" in d.reason
+
+
+def test_r10_rejects_negative_quantity_line(w):
+    intent = make_intent(w)
+    proposal = make_proposal(w, intent, items=[ProposalItem("GHEE1", 3), ProposalItem("RICE5", -1)])
+    base = w.merchant.quote(make_proposal(w, intent, items=[ProposalItem("GHEE1", 3)]))
+    items = list(base.payload["items"]) + [{"sku": "RICE5", "title": "Basmati Rice 5 kg", "category": "groceries", "qty": -1, "unit_price_paise": 45_000}]
+    cart = resign_cart(w, base, items=items, total_paise=135_000, proposal_id=proposal.payload["proposal_id"])
+    d = decide(w, intent, proposal, cart)
+    assert (d.verdict, d.rule_id) == (DENY, "R10_CART_TOTAL_INTEGRITY")
+
+
+def test_r10_rejects_empty_cart(w):
+    intent = make_intent(w)
+    proposal = sign(AgentProposal(new_id("ap"), AGENT_ID, intent.payload["intent_id"], MERCHANT_ID, [], "nothing", w.now).to_payload(), w.keys.agent, f"agent:{AGENT_ID}")
+    base = w.merchant.quote(make_proposal(w, intent))
+    cart = resign_cart(w, base, items=[], total_paise=0, proposal_id=proposal.payload["proposal_id"])
+    d = decide(w, intent, proposal, cart)
+    assert (d.verdict, d.rule_id) == (DENY, "R10_CART_TOTAL_INTEGRITY")
+
+
+def test_r11_extra_unproposed_item_denies(w):
+    intent, proposal, cart = happy_chain(w)
+    items = list(cart.payload["items"]) + [{"sku": "MILK1", "title": "Toned Milk 1 L", "category": "groceries", "qty": 1, "unit_price_paise": 6_500}]
+    d = decide(w, intent, proposal, resign_cart(w, cart, items=items, total_paise=cart.payload["total_paise"] + 6_500))
+    assert (d.verdict, d.rule_id) == (DENY, "R11_CART_MATCHES_PROPOSAL")
+    assert "MILK1" in d.reason
+
+
+def test_r16_token_for_other_intent_denies(w):
+    intent, proposal, cart = happy_chain(w, items=STEPUP_ITEMS)
+    tok = make_stepup(w, intent, cart, intent_id="im_other")
+    d = decide(w, intent, proposal, cart, stepup=tok)
+    assert (d.verdict, d.rule_id) == (DENY, "R16_STEPUP_TOKEN_VALID")
+
+
+def test_huge_total_fails_closed_without_raising(w):
+    intent, proposal, cart = happy_chain(w)
+    huge = resign_cart(w, cart, items=[{**cart.payload["items"][0], "qty": 1, "unit_price_paise": 10**400}], total_paise=10**400)
+    d = decide(w, intent, proposal, huge)
+    assert d.verdict == DENY
