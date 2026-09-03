@@ -43,6 +43,39 @@ def test_fake_cancel_records():
     assert ex.cancelled == [link.link_id]
 
 
+def test_fake_refund_records_and_numbers_the_ids():
+    ex = FakeExecutor()
+    assert ex.refunds == []
+    first = ex.refund("pay_1", 14_000, {"refund_id": "rm_1"})
+    second = ex.refund("pay_1", 1_600, {"refund_id": "rm_2"})
+    assert (first.refund_id, first.status, first.amount_paise) == ("rfnd_fake001", "processed", 14_000)
+    assert (second.refund_id, second.amount_paise) == ("rfnd_fake002", 1_600)
+    assert len(ex.refunds) == 2
+    assert ex.refunds[0]["razorpay_payment_id"] == "pay_1" and ex.refunds[0]["amount_paise"] == 14_000
+    assert ex.refunds[1]["notes"] == {"refund_id": "rm_2"}
+
+
+def test_razorpay_refund_passes_amount_notes_and_timeout():
+    ex = RazorpayExecutor.__new__(RazorpayExecutor)
+    calls = []
+
+    class FakePayments:
+        def refund(self, payment_id, data, **kw):
+            calls.append((payment_id, data, kw.get("timeout")))
+            return {"id": "rfnd_TXZ", "entity": "refund", "amount": 14_000, "currency": "INR",
+                    "payment_id": payment_id, "status": "pending", "notes": data["notes"], "created_at": 1}
+
+    class FakeClient:
+        payment = FakePayments()
+
+    ex.client = FakeClient()
+    info = ex.refund("pay_abc", 14_000, {"refund_id": "rm_1", "long": "x" * 300})
+    assert calls[0][0] == "pay_abc" and calls[0][2] == 10
+    assert calls[0][1]["amount"] == 14_000
+    assert calls[0][1]["notes"]["refund_id"] == "rm_1" and len(calls[0][1]["notes"]["long"]) == 256
+    assert (info.refund_id, info.status, info.amount_paise) == ("rfnd_TXZ", "pending", 14_000)
+
+
 def _executor_with(link_states, order_items=None, all_items=None):
     ex = RazorpayExecutor.__new__(RazorpayExecutor)  # skip __init__: no client construction
     states = iter(link_states)

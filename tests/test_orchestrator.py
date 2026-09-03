@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from mandatemesh.agent import ScriptedAgent
@@ -6,6 +8,7 @@ from mandatemesh.fixtures import AGENT_ID, FIXED_NOW, MERCHANT_ID
 from mandatemesh.keys import Keys
 from mandatemesh.ledger import Ledger
 from mandatemesh.mandates import MalformedMandate
+from mandatemesh.mandates import new_id as real_new_id
 from mandatemesh.merchant import MockMerchant
 import mandatemesh.orchestrator as orch_mod
 from mandatemesh.orchestrator import SCENARIOS, Orchestrator
@@ -30,11 +33,12 @@ def types(ledger):
     return [e.type for e in ledger.events()]
 
 
-def test_scenarios_table_has_the_seven_demos():
-    assert set(SCENARIOS) == {"happy", "stepup", "payfail", "poison", "revoke", "delegate", "overreach"}
+def test_scenarios_table_has_the_eight_demos():
+    assert set(SCENARIOS) == {"happy", "stepup", "payfail", "poison", "revoke", "delegate", "overreach", "refund"}
     assert SCENARIOS["revoke"].revoke_before_proposal and not SCENARIOS["happy"].revoke_before_proposal
-    assert SCENARIOS["happy"].delegation is None
+    assert SCENARIOS["happy"].delegation is None and SCENARIOS["happy"].shortfall is None
     assert len(SCENARIOS["delegate"].delegation) == 1 and len(SCENARIOS["overreach"].delegation) == 1
+    assert SCENARIOS["refund"].shortfall == [("OIL1", 1)]
 
 
 def test_happy_path_pays_and_ledger_verifies(tmp_path):
@@ -255,3 +259,65 @@ def test_malformed_cart_is_a_quote_rejection_not_a_crash(tmp_path, monkeypatch):
     r = orch.run(sc)
     assert r.outcome == "quote_rejected" and ex.links == []
     assert [e.type for e in ledger.events()][-1] == "merchant.quote.rejected"
+
+
+# --- Part II: refunds are money actions too ---
+
+
+def test_refund_scenario_pays_then_refunds_the_short_line(tmp_path):
+    orch, sc, ex, ledger = build(tmp_path, "refund")
+    r = orch.run(sc)
+    assert r.outcome == "paid" and r.refund_id is not None and r.refund_id.startswith("rm_")
+    assert types(ledger)[-5:] == [
+        "payment.captured", "merchant.shortfall", "refund.decision", "mandate.refund.created", "refund.created",
+    ]
+    decision = ledger.of_type("refund.decision")[0].payload
+    assert decision["verdict"] == "ALLOW" and decision["captured_paise"] == 91_000
+    assert decision["refunded_paise"] == 0 and decision["seen_shortfalls"] == []
+    assert decision["now"] == FIXED_NOW and decision["gate_pubkey"] == orch.keys.pub("gate")
+    created = ledger.of_type("refund.created")[0].payload
+    assert created["amount_paise"] == 14_000 and created["razorpay_refund_id"] == "rfnd_fake001"
+    assert created["status"] == "processed" and created["refund_id"] == r.refund_id
+    assert ex.refunds[0]["razorpay_payment_id"] == r.razorpay_payment_id
+    assert ledger.spent_for(r.intent_id) == 77_000
+    assert ledger.verify() == (True, None)
+
+
+def test_duplicate_shortfall_is_denied_on_rf08(tmp_path, monkeypatch):
+    monkeypatch.setattr("mandatemesh.merchant.new_id", lambda prefix: "sf_fixed" if prefix == "sf" else real_new_id(prefix))
+    orch, sc, ex, ledger = build(tmp_path, "refund")
+    ledger.append("refund.created", "executor", {
+        "intent_id": "im_old", "payment_id": "pm_old", "shortfall_id": "sf_fixed", "refund_id": "rm_old",
+        "razorpay_refund_id": "rfnd_old", "amount_paise": 14_000, "status": "processed",
+    })
+    r = orch.run(sc)
+    assert r.outcome == "paid" and r.refund_id is None
+    decision = ledger.of_type("refund.decision")[0].payload
+    assert decision["verdict"] == "DENY" and decision["rule_id"] == "RF08_NO_DUPLICATE"
+    assert decision["seen_shortfalls"] == ["sf_fixed"]
+    assert types(ledger)[-1] == "refund.decision" and ex.refunds == []
+    assert ledger.spent_for(r.intent_id) == 91_000
+
+
+class _RefundRaises(FakeExecutor):
+    def refund(self, razorpay_payment_id, amount_paise, notes):
+        raise RuntimeError("gateway down")
+
+
+def test_refund_executor_failure_is_recorded(tmp_path):
+    orch, sc, ex, ledger = build(tmp_path, "refund")
+    orch.executor = _RefundRaises(["paid"])
+    r = orch.run(sc)
+    assert r.outcome == "paid" and r.refund_id is None
+    assert types(ledger)[-1] == "refund.failed"
+    assert "gateway down" in ledger.of_type("refund.failed")[0].payload["error"]
+    assert ledger.spent_for(r.intent_id) == 91_000
+
+
+def test_rejected_shortfall_does_not_stop_the_run(tmp_path):
+    orch, sc, ex, ledger = build(tmp_path, "refund")
+    sc = replace(sc, shortfall=[("GHEE1", 1)])  # never on the happy cart
+    r = orch.run(sc)
+    assert r.outcome == "paid" and r.refund_id is None
+    assert types(ledger)[-1] == "merchant.shortfall.rejected"
+    assert "not on cart" in ledger.of_type("merchant.shortfall.rejected")[0].payload["reason"]

@@ -5,7 +5,9 @@ Ledger event types emitted here (and nowhere else):
   merchant.quote.rejected, merchant.cart.quoted, orchestrator.replay_refused, gate.decision,
   stepup.requested, stepup.declined, stepup.approved, mandate.payment.created,
   razorpay.link.created, razorpay.link.failed, payment.captured, payment.failed, payment.timeout,
-  payment.error, payment.retry, razorpay.link.cancelled, razorpay.link.cancel_failed, payment.abandoned
+  payment.error, payment.retry, razorpay.link.cancelled, razorpay.link.cancel_failed, payment.abandoned,
+  merchant.shortfall, merchant.shortfall.rejected, refund.decision, mandate.refund.created,
+  refund.created, refund.failed
 """
 from __future__ import annotations
 
@@ -16,7 +18,7 @@ from typing import Callable
 from mandatemesh.agent import Agent
 from mandatemesh.crypto import Envelope, sign
 from mandatemesh.executor import Executor, LinkInfo, PollResult
-from mandatemesh.gate import ALLOW, STEP_UP, Decision, GateInput, PolicyGate
+from mandatemesh.gate import ALLOW, STEP_UP, Decision, GateInput, PolicyGate, RefundInput
 from mandatemesh.keys import Keys
 from mandatemesh.ledger import Ledger
 from mandatemesh.mandates import (
@@ -25,6 +27,9 @@ from mandatemesh.mandates import (
     MalformedMandate,
     PaymentMandate,
     ProposalItem,
+    RefundMandate,
+    ShortfallAttestation,
+    ShortLine,
     StepUpToken,
     SubMandate,
     new_id,
@@ -53,6 +58,8 @@ class Scenario:
     # One entry per sub-mandate, each {"max_total_paise", "max_per_txn_paise", "merchant_allowlist", "categories"}.
     # When set, the intent is issued to the planner, which then delegates to the proposing agent.
     delegation: list[dict] | None = None
+    # (sku, qty_short) lines the merchant admits it could not deliver, attested after the capture.
+    shortfall: list[tuple[str, int]] | None = None
 
 
 SCENARIOS: dict[str, Scenario] = {
@@ -97,6 +104,12 @@ SCENARIOS: dict[str, Scenario] = {
         delegation=[{"max_total_paise": 500_000, "max_per_txn_paise": 500_000,
                      "merchant_allowlist": ["kirana-one"], "categories": ["groceries"]}],
     ),
+    "refund": Scenario(
+        "refund", HAPPY_REQUEST, 200_000, 150_000, ["kirana-one"], ["groceries"],
+        [[ProposalItem("RICE5", 1), ProposalItem("DAL1", 2), ProposalItem("OIL1", 1)]],
+        "Paid, then the merchant attests one line short -> refund rules -> real Razorpay refund",
+        shortfall=[("OIL1", 1)],
+    ),
 }
 
 
@@ -108,6 +121,7 @@ class RunResult:
     payment_id: str | None = None
     razorpay_payment_id: str | None = None
     link: LinkInfo | None = None
+    refund_id: str | None = None
 
 
 def inr(paise: int) -> str:
@@ -227,7 +241,7 @@ class Orchestrator:
             return RunResult("error", decision, iid, pm.payment_id)
         self.ledger.append("razorpay.link.created", "executor", {"intent_id": iid, "cart_id": cid, "payment_id": pm.payment_id, "link_id": link.link_id, "short_url": link.short_url, "amount_paise": pm.amount_paise})
         self.say(f"[razorpay] payment link {link.link_id} for {inr(pm.amount_paise)}: {link.short_url}")
-        return self._collect(intent, proposal, cart, stepup, decision, pm, link, chain, chain_ids)
+        return self._collect(sc, intent, proposal, cart, stepup, decision, pm, pm_env, link, chain, chain_ids)
 
     def _delegate(self, sc: Scenario, intent_obj: IntentMandate, now: int) -> list[Envelope]:
         """Register the planner and have it sign the scenario's sub-mandate chain, root-first. Empty when undelegated."""
@@ -254,8 +268,8 @@ class Orchestrator:
             parent_id = sub.sub_id
         return chain
 
-    def _collect(self, intent: Envelope, proposal: Envelope, cart: Envelope, stepup: Envelope | None,
-                 decision: Decision, pm: PaymentMandate, link: LinkInfo,
+    def _collect(self, sc: Scenario, intent: Envelope, proposal: Envelope, cart: Envelope, stepup: Envelope | None,
+                 decision: Decision, pm: PaymentMandate, pm_env: Envelope, link: LinkInfo,
                  chain: list[Envelope], chain_ids: list[str]) -> RunResult:
         """Wait for the customer to pay: up to MAX_ATTEMPTS, gate re-run before a retry, close the link after."""
         seen: set[str] = set()
@@ -268,7 +282,7 @@ class Orchestrator:
                 self.say(f"[razorpay] waiting for payment (attempt {attempt}/{MAX_ATTEMPTS}) - open the link; test checkout: Netbanking mock bank -> Failure or Success (or UPI success@razorpay / failure@razorpay where UPI is enabled)")
                 result = self.executor.poll(link.link_id, self.poll_timeout_s, self.poll_interval_s, seen)
                 if result.outcome == "paid":
-                    return self._captured(base, decision, pm, link, attempt, result.payment_id, result.amount_paise, chain_ids)
+                    return self._captured(sc, base, decision, pm, pm_env, cart, link, attempt, result.payment_id, result.amount_paise, chain_ids)
                 event = "payment.failed" if result.outcome == "failed" else "payment.timeout"
                 self.ledger.append(event, "executor", {**base, "attempt": attempt, "razorpay_payment_id": result.payment_id})
                 self.say(f"[razorpay] attempt {attempt} {result.outcome}" + (f" ({result.payment_id})" if result.payment_id else ""))
@@ -290,20 +304,86 @@ class Orchestrator:
             self.say(f"[razorpay] polling failed: {type(exc).__name__}: {exc}")
             late = self._close_link(base, seen, link)
             if late is not None:
-                return self._captured(base, decision, pm, link, attempts, late.payment_id, late.amount_paise, chain_ids)
+                return self._captured(sc, base, decision, pm, pm_env, cart, link, attempts, late.payment_id, late.amount_paise, chain_ids)
             return RunResult("error", decision, pm.intent_id, pm.payment_id, None, link)
         late = self._close_link(base, seen, link)
         if late is not None:
-            return self._captured(base, decision, pm, link, attempts, late.payment_id, late.amount_paise, chain_ids)
+            return self._captured(sc, base, decision, pm, pm_env, cart, link, attempts, late.payment_id, late.amount_paise, chain_ids)
         self.ledger.append("payment.abandoned", "gate", {**base, "attempts": attempts, "reason": abandon_reason})
         self.say(f"[gate] abandoned after {attempts} attempt(s): {abandon_reason}")
         return RunResult("abandoned", decision, pm.intent_id, pm.payment_id, None, link)
 
-    def _captured(self, base: dict, decision: Decision, pm: PaymentMandate, link: LinkInfo, attempt: int,
-                  razorpay_payment_id: str | None, amount_paise: int, chain_ids: list[str]) -> RunResult:
+    def _captured(self, sc: Scenario, base: dict, decision: Decision, pm: PaymentMandate, pm_env: Envelope,
+                  cart: Envelope, link: LinkInfo, attempt: int, razorpay_payment_id: str | None,
+                  amount_paise: int, chain_ids: list[str]) -> RunResult:
         self.ledger.append("payment.captured", "executor", {**base, "attempt": attempt, "razorpay_payment_id": razorpay_payment_id, "amount_paise": amount_paise, "chain_ids": list(chain_ids)})
         self.say(f"[razorpay] CAPTURED {razorpay_payment_id} {inr(amount_paise)}")
-        return RunResult("paid", decision, pm.intent_id, pm.payment_id, razorpay_payment_id, link)
+        refund_id = None
+        if sc.shortfall and razorpay_payment_id:  # nothing to refund against if the link never told us the payment id
+            refund_id = self._refund(sc, cart, pm, pm_env, razorpay_payment_id, chain_ids)
+        return RunResult("paid", decision, pm.intent_id, pm.payment_id, razorpay_payment_id, link, refund_id)
+
+    def _refund(self, sc: Scenario, cart_env: Envelope, pm: PaymentMandate, pm_env: Envelope,
+                razorpay_payment_id: str, chain_ids: list[str]) -> str | None:
+        """Money back is a money action: the merchant only attests, the gate decides, the executor obeys a signed mandate."""
+        assert sc.shortfall is not None
+        iid, cid = pm.intent_id, pm.cart_id
+        base = {"intent_id": iid, "cart_id": cid, "payment_id": pm.payment_id}
+        try:
+            att_env = self.merchant.attest_shortfall(cart_env, pm.payment_id, [ShortLine(sku, qty) for sku, qty in sc.shortfall])
+        except MerchantError as exc:
+            self.ledger.append("merchant.shortfall.rejected", f"merchant:{self.merchant.merchant_id}", {**base, "reason": str(exc)[:200]})
+            self.say(f"[merchant] shortfall rejected: {str(exc)[:200]}")
+            return None
+        att = ShortfallAttestation.from_payload(att_env.payload)
+        self.ledger.append("merchant.shortfall", f"merchant:{self.merchant.merchant_id}", {
+            **base, "shortfall_id": att.shortfall_id, "refund_paise": att.refund_paise, "envelope": att_env.to_dict(),
+        })
+        self.say(f"[merchant] attests {len(att.lines)} line(s) short: refund {inr(att.refund_paise)}")
+
+        captured = sum(int(e.payload.get("amount_paise", 0)) for e in self.ledger.of_type("payment.captured")
+                       if e.payload.get("payment_id") == pm.payment_id)
+        refunded = sum(int(e.payload.get("amount_paise", 0)) for e in self.ledger.of_type("refund.created")
+                       if e.payload.get("payment_id") == pm.payment_id)
+        seen = [e.payload["shortfall_id"] for e in self.ledger.of_type("refund.created")]
+        ri = RefundInput(
+            attestation=att_env, cart=cart_env, payment=pm_env,
+            merchant_pubs={self.merchant.merchant_id: self.merchant.pubkey_b64}, gate_pub_b64=self.keys.pub("gate"),
+            captured_paise=captured, refunded_paise=refunded, seen_shortfalls=seen, now=self._clock(),
+        )
+        d = self.gate.evaluate_refund(ri)
+        # Everything the pure gate consumed goes in the event, so an auditor can replay this refund decision offline.
+        self.ledger.append("refund.decision", "gate", {
+            **base, "shortfall_id": att.shortfall_id, "now": ri.now, "captured_paise": captured,
+            "refunded_paise": refunded, "seen_shortfalls": list(seen), "gate_pubkey": ri.gate_pub_b64, **d.to_dict(),
+        })
+        self.say(f"[gate] {d.verdict}: {d.reason}" if d.rule_id == d.verdict else f"[gate] {d.verdict} ({d.rule_id}): {d.reason}")
+        if d.verdict != ALLOW:
+            return None
+
+        rm = RefundMandate(new_id("rm"), pm.payment_id, razorpay_payment_id, att.refund_paise, pm.currency, self._clock())
+        rm_env = sign(rm.to_payload(), self.keys.gate, "gate")
+        self.ledger.append("mandate.refund.created", "gate", {
+            "intent_id": iid, "payment_id": pm.payment_id, "refund_id": rm.refund_id,
+            "amount_paise": rm.amount_paise, "envelope": rm_env.to_dict(),
+        })
+        try:
+            info = self.executor.refund(razorpay_payment_id, rm.amount_paise,
+                                        {"intent_id": iid, "payment_id": pm.payment_id, "refund_id": rm.refund_id})
+        except Exception as exc:  # API/network error: no money moved back; say so and leave the capture standing
+            self.ledger.append("refund.failed", "executor", {
+                "intent_id": iid, "payment_id": pm.payment_id, "refund_id": rm.refund_id,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            self.say(f"[razorpay] refund failed: {type(exc).__name__}: {exc}")
+            return None
+        self.ledger.append("refund.created", "executor", {
+            "intent_id": iid, "payment_id": pm.payment_id, "shortfall_id": att.shortfall_id,
+            "refund_id": rm.refund_id, "razorpay_refund_id": info.refund_id, "amount_paise": info.amount_paise,
+            "status": info.status, "chain_ids": list(chain_ids),
+        })
+        self.say(f"[razorpay] REFUNDED {info.refund_id} {inr(info.amount_paise)}")
+        return rm.refund_id
 
     def _close_link(self, base: dict, seen: set[str], link: LinkInfo) -> PollResult | None:
         """Cancel the link. If Razorpay refuses (typically because it was just paid), look once more for a capture.

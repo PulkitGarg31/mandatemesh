@@ -166,6 +166,51 @@ class PaymentMandate:
 
 
 @dataclass
+class ShortLine:
+    sku: str
+    qty_short: int
+
+
+@dataclass
+class ShortfallAttestation:
+    """Signed by the merchant. Says which paid-for lines could not be delivered."""
+
+    shortfall_id: str
+    cart_id: str
+    payment_id: str
+    lines: list[ShortLine]
+    refund_paise: int
+    issued_at: int
+    expires_at: int
+
+    def to_payload(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_payload(cls, p: dict) -> "ShortfallAttestation":
+        return _parse(cls, p, cls.__name__)
+
+
+@dataclass
+class RefundMandate:
+    """Signed by the gate. The only thing the executor will refund against."""
+
+    refund_id: str
+    payment_id: str
+    razorpay_payment_id: str
+    amount_paise: int
+    currency: str
+    issued_at: int
+
+    def to_payload(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_payload(cls, p: dict) -> "RefundMandate":
+        return _parse(cls, p, cls.__name__)
+
+
+@dataclass
 class SubMandate:
     """Signed by the delegator agent. Narrows a parent mandate for one delegate agent."""
 

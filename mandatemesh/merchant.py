@@ -9,14 +9,22 @@ from typing import Callable
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from mandatemesh.crypto import Envelope, public_b64, sign
-from mandatemesh.mandates import AgentProposal, CartItem, CartMandate, MalformedMandate, new_id
+from mandatemesh.mandates import (
+    AgentProposal,
+    CartItem,
+    CartMandate,
+    MalformedMandate,
+    ShortfallAttestation,
+    ShortLine,
+    new_id,
+)
 
 CART_TTL_S = 600
 DEFAULT_FEED = Path(__file__).resolve().parent.parent / "merchant_data" / "feed.json"
 
 
 class MerchantError(Exception):
-    """The merchant refused to quote (malformed proposal, unknown SKU, out of stock, wrong merchant, empty cart, bad quantity)."""
+    """The merchant refused to quote or to attest (malformed mandate, unknown SKU, out of stock, wrong merchant, empty cart, bad quantity)."""
 
 
 class MockMerchant:
@@ -81,3 +89,32 @@ class MockMerchant:
             expires_at=now + CART_TTL_S,
         )
         return sign(cart.to_payload(), self._key, f"merchant:{self.merchant_id}")
+
+    def attest_shortfall(self, cart_env: Envelope, payment_id: str, lines: list[ShortLine]) -> Envelope:
+        """Admit that paid-for lines could not be delivered. The merchant states the facts; the gate decides the refund."""
+        try:
+            cart = CartMandate.from_payload(cart_env.payload)
+        except MalformedMandate as exc:
+            raise MerchantError(f"malformed cart: {exc}") from exc
+        if not lines:
+            raise MerchantError("empty shortfall")
+        by_sku = {line.sku: line for line in cart.items}
+        refund_paise = 0
+        for short in lines:
+            item = by_sku.get(short.sku)
+            if item is None:
+                raise MerchantError(f"sku {short.sku} is not on cart {cart.cart_id}")
+            if not 1 <= short.qty_short <= item.qty:
+                raise MerchantError(f"invalid qty_short {short.qty_short} for {short.sku}; cart line is {item.qty}")
+            refund_paise += short.qty_short * item.unit_price_paise
+        now = self._clock()
+        att = ShortfallAttestation(
+            shortfall_id=new_id("sf"),
+            cart_id=cart.cart_id,
+            payment_id=payment_id,
+            lines=list(lines),
+            refund_paise=refund_paise,
+            issued_at=now,
+            expires_at=now + CART_TTL_S,
+        )
+        return sign(att.to_payload(), self._key, f"merchant:{self.merchant_id}")

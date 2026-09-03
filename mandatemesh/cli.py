@@ -132,6 +132,8 @@ def cmd_demo(args: argparse.Namespace) -> int:
     if result.decision is not None:
         print_decision(result.decision)
     print_ledger(ledger)
+    if result.refund_id:
+        console.print(f"[green]refund {escape(result.refund_id)} recorded[/]")
     if result.outcome == "paid" and result.payment_id:
         receipt_path = ledger.path.parent / f"receipt-{result.payment_id}.md"
         receipt_path.write_text(ledger.receipt(result.payment_id), encoding="utf-8")

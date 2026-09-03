@@ -11,6 +11,9 @@ from mandatemesh.mandates import (
     MalformedMandate,
     PaymentMandate,
     ProposalItem,
+    RefundMandate,
+    ShortfallAttestation,
+    ShortLine,
     StepUpToken,
     SubMandate,
     new_id,
@@ -94,6 +97,30 @@ def test_from_payload_rejects_bad_nested_items():
 def test_wrong_mandate_type_is_malformed():
     with pytest.raises(MalformedMandate):
         IntentMandate.from_payload(StepUpToken("su_1", "im_1", "cm_1", 1, 1, 2).to_payload())
+
+
+def test_shortfall_attestation_round_trip_rebuilds_lines():
+    sf = ShortfallAttestation("sf_1", "cm_1", "pm_1", [ShortLine("OIL1", 1)], 14_000, 100, 700)
+    back = ShortfallAttestation.from_payload(sf.to_payload())
+    assert back == sf
+    assert isinstance(back.lines[0], ShortLine) and back.lines[0].qty_short == 1
+    with pytest.raises(MalformedMandate, match=r"ShortfallAttestation: unknown keys \['extra'\]"):
+        ShortfallAttestation.from_payload({**sf.to_payload(), "extra": 1})
+
+
+def test_shortfall_attestation_rejects_bad_nested_line():
+    payload = ShortfallAttestation("sf_1", "cm_1", "pm_1", [ShortLine("OIL1", 1)], 14_000, 100, 700).to_payload()
+    payload["lines"][0]["qty_short"] = "1"
+    with pytest.raises(MalformedMandate, match=r"lines\[0\]\.qty_short must be int"):
+        ShortfallAttestation.from_payload(payload)
+
+
+def test_refund_mandate_round_trip_and_strict_shape():
+    rm = RefundMandate("rm_1", "pm_1", "pay_1", 14_000, "INR", 100)
+    assert RefundMandate.from_payload(rm.to_payload()) == rm
+    assert rm.to_payload()["razorpay_payment_id"] == "pay_1"
+    with pytest.raises(MalformedMandate, match=r"RefundMandate: unknown keys \['extra'\]"):
+        RefundMandate.from_payload({**rm.to_payload(), "extra": 1})
 
 
 def test_json_text_round_trip_with_unicode_title():

@@ -3,7 +3,7 @@ import pytest
 from mandatemesh.crypto import Envelope, sign
 from mandatemesh.fixtures import (
     AGENT_ID, HAPPY_ITEMS, MERCHANT_ID, PLANNER_ID, STEPUP_ITEMS, delegated_chain, happy_chain, make_gate_input, make_intent,
-    make_proposal, make_stepup, make_sub, make_world, resign_cart,
+    make_payment_mandate, make_proposal, make_refund_input, make_shortfall, make_stepup, make_sub, make_world, resign_cart,
 )
 from mandatemesh.gate import ALLOW, DENY, STEP_UP, PolicyGate
 from mandatemesh.mandates import AgentProposal, ProposalItem, new_id
@@ -392,3 +392,125 @@ def test_r15_sub_total_cap_with_prior_spend(w):
     d = decide(w, intent, proposal, cart, chain=[sub], spent_by={sub.payload["sub_id"]: 60_000})
     assert (d.verdict, d.rule_id) == (STEP_UP, "R15_TOTAL_CAP")
     assert "'shopper-01'" in d.reason and "600.00" in d.reason and "1,000.00" in d.reason
+
+
+# --- Part II: refunds are money actions too (RF00-RF08) ---
+
+RF_TRAIL = [
+    "RF00_WELL_FORMED", "RF01_CART_SIG", "RF02_PAYMENT_SIG", "RF03_ATTESTATION_SIG",
+    "RF04_ATTESTATION_NOT_EXPIRED", "RF05_PAYMENT_CAPTURED", "RF06_SHORTFALL_INTEGRITY",
+    "RF07_REFUND_WITHIN_CAPTURE", "RF08_NO_DUPLICATE",
+]
+
+
+def refund_chain(w, lines=(("OIL1", 1),), **over):
+    """intent -> proposal -> cart -> gate-signed payment mandate -> merchant-signed shortfall attestation."""
+    _, _, cart = happy_chain(w)
+    payment = make_payment_mandate(w, cart)
+    return make_shortfall(w, cart, payment, lines=lines, **over), cart, payment
+
+
+def refund_decide(w, att, cart, payment, **kw):
+    return w.gate.evaluate_refund(make_refund_input(w, att, cart, payment, **kw))
+
+
+def test_refund_happy_path_allows_with_full_trail(w):
+    att, cart, payment = refund_chain(w)
+    d = refund_decide(w, att, cart, payment)
+    assert (d.verdict, d.rule_id) == (ALLOW, "ALLOW")
+    assert [c.rule_id for c in d.checks] == RF_TRAIL
+    assert all(c.passed for c in d.checks)
+    assert "RF99_GATE_ERROR" not in [c.rule_id for c in d.checks]
+    assert "140.00" in d.reason and payment.payload["payment_id"] in d.reason
+
+
+def test_rf00_malformed_attestation_denies(w):
+    att, cart, payment = refund_chain(w)
+    malformed = sign({**att.payload, "note": "extra field"}, w.keys.merchant, att.signer)
+    d = refund_decide(w, malformed, cart, payment)
+    assert (d.verdict, d.rule_id) == (DENY, "RF00_WELL_FORMED")
+    assert "unknown keys" in d.reason
+
+
+def test_rf01_cart_signed_by_wrong_key_denies(w):
+    att, cart, payment = refund_chain(w)
+    d = refund_decide(w, att, sign(cart.payload, w.keys.user, cart.signer), payment)
+    assert (d.verdict, d.rule_id) == (DENY, "RF01_CART_SIG")
+
+
+def test_rf02_payment_signed_by_wrong_key_denies(w):
+    att, cart, payment = refund_chain(w)
+    d = refund_decide(w, att, cart, sign(payment.payload, w.keys.agent, payment.signer))
+    assert (d.verdict, d.rule_id) == (DENY, "RF02_PAYMENT_SIG")
+    assert "gate key" in d.reason
+
+
+def test_rf02_payment_for_another_cart_denies(w):
+    att, cart, _ = refund_chain(w)
+    other_payment = make_payment_mandate(w, happy_chain(w)[2])
+    d = refund_decide(w, att, cart, other_payment)
+    assert (d.verdict, d.rule_id) == (DENY, "RF02_PAYMENT_SIG")
+    assert "not" in d.reason and cart.payload["cart_id"] in d.reason
+
+
+def test_rf03_attestation_signed_by_wrong_key_denies(w):
+    att, cart, payment = refund_chain(w)
+    d = refund_decide(w, sign(att.payload, w.keys.agent, att.signer), cart, payment)
+    assert (d.verdict, d.rule_id) == (DENY, "RF03_ATTESTATION_SIG")
+    assert "does not verify" in d.reason
+
+
+def test_rf03_attestation_for_another_payment_denies(w):
+    att, cart, payment = refund_chain(w, payment_id="pm_somewhere_else")
+    d = refund_decide(w, att, cart, payment)
+    assert (d.verdict, d.rule_id) == (DENY, "RF03_ATTESTATION_SIG")
+    assert "pm_somewhere_else" in d.reason
+
+
+def test_rf04_expired_attestation_denies(w):
+    att, cart, payment = refund_chain(w)
+    d = refund_decide(w, att, cart, payment, now=att.payload["expires_at"])
+    assert (d.verdict, d.rule_id) == (DENY, "RF04_ATTESTATION_NOT_EXPIRED")
+
+
+def test_rf05_nothing_captured_denies(w):
+    att, cart, payment = refund_chain(w)
+    d = refund_decide(w, att, cart, payment, captured_paise=0)
+    assert (d.verdict, d.rule_id) == (DENY, "RF05_PAYMENT_CAPTURED")
+
+
+def test_rf06_inflated_refund_amount_denies(w):
+    att, cart, payment = refund_chain(w, refund_paise=90_000)
+    d = refund_decide(w, att, cart, payment)
+    assert (d.verdict, d.rule_id) == (DENY, "RF06_SHORTFALL_INTEGRITY")
+    assert "900.00" in d.reason and "140.00" in d.reason
+
+
+def test_rf06_qty_short_above_the_cart_line_denies(w):
+    att, cart, payment = refund_chain(w, lines=(("OIL1", 2),))
+    d = refund_decide(w, att, cart, payment)
+    assert (d.verdict, d.rule_id) == (DENY, "RF06_SHORTFALL_INTEGRITY")
+    assert "'OIL1'" in d.reason
+
+
+def test_rf07_refund_over_the_remaining_capture_denies(w):
+    att, cart, payment = refund_chain(w)
+    d = refund_decide(w, att, cart, payment, captured_paise=91_000, refunded_paise=80_000)
+    assert (d.verdict, d.rule_id) == (DENY, "RF07_REFUND_WITHIN_CAPTURE")
+    assert "110.00" in d.reason
+
+
+def test_rf08_duplicate_shortfall_denies(w):
+    att, cart, payment = refund_chain(w)
+    d = refund_decide(w, att, cart, payment, seen=[att.payload["shortfall_id"]])
+    assert (d.verdict, d.rule_id) == (DENY, "RF08_NO_DUPLICATE")
+    assert att.payload["shortfall_id"] in d.reason
+
+
+def test_rf99_internal_error_is_a_deny_with_trail(w):
+    att, cart, payment = refund_chain(w)
+    ri = make_refund_input(w, att, cart, payment)
+    ri.merchant_pubs = None
+    d = w.gate.evaluate_refund(ri)
+    assert (d.verdict, d.rule_id) == (DENY, "RF99_GATE_ERROR")
+    assert [c.rule_id for c in d.checks] == ["RF00_WELL_FORMED", "RF99_GATE_ERROR"]

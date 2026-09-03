@@ -4,7 +4,16 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 
 from mandatemesh.crypto import Envelope, verify
-from mandatemesh.mandates import AgentProposal, CartMandate, IntentMandate, MalformedMandate, StepUpToken, SubMandate
+from mandatemesh.mandates import (
+    AgentProposal,
+    CartMandate,
+    IntentMandate,
+    MalformedMandate,
+    PaymentMandate,
+    ShortfallAttestation,
+    StepUpToken,
+    SubMandate,
+)
 from mandatemesh.registry import ACTIVE, AgentRegistry
 
 ALLOW = "ALLOW"
@@ -42,6 +51,21 @@ class GateInput:
     stepup: Envelope | None = None
     chain: list[Envelope] = field(default_factory=list)  # sub-mandates, root-first, leaf last; empty when undelegated
     spent_by: dict[str, int] = field(default_factory=dict)  # spend per sub_id; spent_paise stays the root intent's
+
+
+@dataclass
+class RefundInput:
+    """Everything the gate needs to authorize money going the other way. Same discipline: pure inputs, no I/O."""
+
+    attestation: Envelope
+    cart: Envelope
+    payment: Envelope
+    merchant_pubs: dict[str, str]
+    gate_pub_b64: str
+    captured_paise: int
+    refunded_paise: int
+    seen_shortfalls: list[str]
+    now: int
 
 
 def rupees(paise: int) -> str:
@@ -263,3 +287,86 @@ class PolicyGate:
         if tok.approved_total_paise < cart.total_paise:
             return False, f"step-up approved {rupees(tok.approved_total_paise)} but cart is {rupees(cart.total_paise)}"
         return True, f"step-up {tok.stepup_id} approves {rupees(tok.approved_total_paise)} for cart {cart.cart_id}"
+
+    # --- Refunds. Money going back is still a money action, so it goes through the same kind of gate. ---
+
+    def evaluate_refund(self, ri: RefundInput) -> Decision:
+        checks: list[Check] = []
+        try:
+            return self._evaluate_refund(ri, checks)
+        except Exception as exc:  # same guard as evaluate(): an internal error is a DENY, never an ALLOW
+            detail = f"internal gate error: {type(exc).__name__}"
+            checks.append(Check("RF99_GATE_ERROR", False, detail))
+            return Decision(DENY, "RF99_GATE_ERROR", detail, checks)
+
+    def _evaluate_refund(self, ri: RefundInput, checks: list[Check]) -> Decision:
+        def ok(rule: str, detail: str) -> None:
+            checks.append(Check(rule, True, detail))
+
+        def fail(rule: str, detail: str, verdict: str = DENY) -> Decision:
+            checks.append(Check(rule, False, detail))
+            return Decision(verdict, rule, detail, checks)
+
+        try:
+            att = ShortfallAttestation.from_payload(ri.attestation.payload)
+            cart = CartMandate.from_payload(ri.cart.payload)
+            payment = PaymentMandate.from_payload(ri.payment.payload)
+        except MalformedMandate as exc:
+            return fail("RF00_WELL_FORMED", f"malformed mandate: {str(exc)[:200]}")
+        ok("RF00_WELL_FORMED", "attestation, cart and payment mandate payloads are well-formed")
+
+        merchant_pub = ri.merchant_pubs.get(cart.merchant_id)
+        if merchant_pub is None or not verify(ri.cart, merchant_pub):
+            return fail("RF01_CART_SIG", f"cart signature does not verify for merchant {cart.merchant_id!r}")
+        ok("RF01_CART_SIG", f"cart mandate signature verified for merchant {cart.merchant_id!r}")
+
+        if not verify(ri.payment, ri.gate_pub_b64):
+            return fail("RF02_PAYMENT_SIG", "payment mandate signature does not verify against the gate key")
+        if payment.cart_id != cart.cart_id:
+            return fail("RF02_PAYMENT_SIG", f"payment mandate is for cart {payment.cart_id!r}, not {cart.cart_id!r}")
+        ok("RF02_PAYMENT_SIG", f"payment mandate {payment.payment_id!r} verified and bound to cart {cart.cart_id!r}")
+
+        if not verify(ri.attestation, merchant_pub):
+            return fail("RF03_ATTESTATION_SIG", f"shortfall attestation does not verify for merchant {cart.merchant_id!r}")
+        if att.cart_id != cart.cart_id:
+            return fail("RF03_ATTESTATION_SIG", f"attestation is for cart {att.cart_id!r}, not {cart.cart_id!r}")
+        if att.payment_id != payment.payment_id:
+            return fail("RF03_ATTESTATION_SIG", f"attestation is for payment {att.payment_id!r}, not {payment.payment_id!r}")
+        ok("RF03_ATTESTATION_SIG", f"attestation {att.shortfall_id!r} verified and bound to this cart and payment")
+
+        if ri.now >= att.expires_at:
+            return fail("RF04_ATTESTATION_NOT_EXPIRED", f"attestation expired at {att.expires_at}; now is {ri.now}")
+        ok("RF04_ATTESTATION_NOT_EXPIRED", f"attestation valid until {att.expires_at}")
+
+        if ri.captured_paise <= 0:
+            return fail("RF05_PAYMENT_CAPTURED", f"nothing was captured against payment {payment.payment_id!r}; there is nothing to refund")
+        ok("RF05_PAYMENT_CAPTURED", f"{rupees(ri.captured_paise)} captured against payment {payment.payment_id!r}")
+
+        # RF06: the refund is priced from the SIGNED cart, never from the number the merchant put in the attestation.
+        if not att.lines:
+            return fail("RF06_SHORTFALL_INTEGRITY", "attestation lists no short lines")
+        cart_lines = {line.sku: line for line in cart.items}
+        computed = 0
+        for short in att.lines:
+            line = cart_lines.get(short.sku)
+            if line is None:
+                return fail("RF06_SHORTFALL_INTEGRITY", f"short line {short.sku!r} is not on the signed cart")
+            if not 1 <= short.qty_short <= line.qty:
+                return fail("RF06_SHORTFALL_INTEGRITY", f"short quantity {short.qty_short} for {short.sku!r} is not between 1 and the cart's {line.qty}")
+            computed += short.qty_short * line.unit_price_paise
+        if att.refund_paise != computed:
+            return fail("RF06_SHORTFALL_INTEGRITY", f"attested refund {rupees(att.refund_paise)} != {rupees(computed)} priced from the signed cart lines")
+        if att.refund_paise <= 0:
+            return fail("RF06_SHORTFALL_INTEGRITY", f"refund amount {rupees(att.refund_paise)} is not positive")
+        ok("RF06_SHORTFALL_INTEGRITY", f"{len(att.lines)} short line(s) price out to {rupees(att.refund_paise)} on the signed cart")
+
+        refundable = ri.captured_paise - ri.refunded_paise
+        if att.refund_paise > refundable:
+            return fail("RF07_REFUND_WITHIN_CAPTURE", f"refund {rupees(att.refund_paise)} exceeds the {rupees(refundable)} still refundable on payment {payment.payment_id!r}")
+        ok("RF07_REFUND_WITHIN_CAPTURE", f"refund {rupees(att.refund_paise)} is within the {rupees(refundable)} still refundable")
+
+        if att.shortfall_id in ri.seen_shortfalls:
+            return fail("RF08_NO_DUPLICATE", f"shortfall {att.shortfall_id!r} has already been refunded")
+        ok("RF08_NO_DUPLICATE", f"shortfall {att.shortfall_id!r} has not been refunded before")
+
+        return Decision(ALLOW, "ALLOW", f"all {len(checks)} checks passed; authorizing a refund of {rupees(att.refund_paise)} against {payment.payment_id}", checks)

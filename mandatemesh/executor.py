@@ -36,10 +36,18 @@ class PollResult:
     attempts: list[Attempt] = field(default_factory=list)
 
 
+@dataclass
+class RefundInfo:
+    refund_id: str
+    status: str
+    amount_paise: int
+
+
 class Executor(Protocol):
     def create_payment_link(self, pm: PaymentMandate, description: str, notes: dict) -> LinkInfo: ...
     def poll(self, link_id: str, timeout_s: int, interval_s: float, seen: set[str]) -> PollResult: ...
     def cancel(self, link_id: str) -> None: ...
+    def refund(self, razorpay_payment_id: str, amount_paise: int, notes: dict) -> RefundInfo: ...
 
 
 class FakeExecutor:
@@ -50,6 +58,7 @@ class FakeExecutor:
         self.links: list[LinkInfo] = []
         self.amounts: dict[str, int] = {}
         self.cancelled: list[str] = []
+        self.refunds: list[dict] = []
         self._n = 0
 
     def create_payment_link(self, pm: PaymentMandate, description: str, notes: dict) -> LinkInfo:
@@ -71,6 +80,10 @@ class FakeExecutor:
 
     def cancel(self, link_id: str) -> None:
         self.cancelled.append(link_id)
+
+    def refund(self, razorpay_payment_id: str, amount_paise: int, notes: dict) -> RefundInfo:
+        self.refunds.append({"razorpay_payment_id": razorpay_payment_id, "amount_paise": amount_paise, "notes": dict(notes)})
+        return RefundInfo(f"rfnd_fake{len(self.refunds):03d}", "processed", amount_paise)
 
 
 class RazorpayExecutor:
@@ -159,3 +172,11 @@ class RazorpayExecutor:
 
     def cancel(self, link_id: str) -> None:
         self.client.payment_link.cancel(link_id, timeout=REQUEST_TIMEOUT_S)
+
+    def refund(self, razorpay_payment_id: str, amount_paise: int, notes: dict) -> RefundInfo:
+        data = self.client.payment.refund(
+            razorpay_payment_id,
+            {"amount": amount_paise, "notes": {str(k)[:40]: str(v)[:256] for k, v in notes.items()}},
+            timeout=REQUEST_TIMEOUT_S,
+        )
+        return RefundInfo(data["id"], str(data.get("status", "")), int(data.get("amount", amount_paise)))

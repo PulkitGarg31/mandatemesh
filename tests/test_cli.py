@@ -48,6 +48,16 @@ def test_delegation_scenarios_run_offline(tmp_path, monkeypatch):
     assert "mandate.sub.created" in [e.type for e in Ledger(tmp_path / "runs" / "d1" / "ledger.jsonl").events()]
 
 
+def test_refund_scenario_runs_offline_and_records_the_refund(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("FAKE_OUTCOMES", raising=False)
+    assert main(["keys", "init"]) == 0
+    assert main(["demo", "--scenario", "refund", "--agent", "scripted", "--executor", "fake", "--run-id", "r1"]) == 0
+    types = [e.type for e in Ledger(tmp_path / "runs" / "r1" / "ledger.jsonl").events()]
+    assert "refund.created" in types and "merchant.shortfall" in types
+    assert "recorded" in capsys.readouterr().out
+
+
 def test_cli_errors_are_clean_exit_codes(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("FAKE_OUTCOMES", raising=False)

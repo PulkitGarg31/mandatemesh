@@ -4,9 +4,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from mandatemesh.crypto import Envelope, sign
-from mandatemesh.gate import GateInput, PolicyGate
+from mandatemesh.gate import GateInput, PolicyGate, RefundInput
 from mandatemesh.keys import Keys
-from mandatemesh.mandates import AgentProposal, IntentMandate, ProposalItem, StepUpToken, SubMandate, new_id
+from mandatemesh.mandates import (
+    AgentProposal,
+    IntentMandate,
+    PaymentMandate,
+    ProposalItem,
+    ShortfallAttestation,
+    ShortLine,
+    StepUpToken,
+    SubMandate,
+    new_id,
+)
 from mandatemesh.merchant import MockMerchant
 from mandatemesh.registry import AgentRegistry
 
@@ -76,6 +86,39 @@ def make_sub(w: World, parent_env: Envelope, delegator_key=None, delegator_id: s
     )
     fields.update(over)
     return sign(SubMandate(**fields).to_payload(), delegator_key or w.keys.planner, f"agent:{delegator_id}")
+
+
+def make_payment_mandate(w: World, cart_env: Envelope, amount_paise: int | None = None, **over) -> Envelope:
+    """The gate-signed payment mandate for a cart: what a refund is later measured against."""
+    fields = dict(
+        payment_id=new_id("pm"), intent_id=cart_env.payload["intent_id"], cart_id=cart_env.payload["cart_id"],
+        amount_paise=cart_env.payload["total_paise"] if amount_paise is None else amount_paise,
+        currency=cart_env.payload["currency"], issued_at=w.now,
+    )
+    fields.update(over)
+    return sign(PaymentMandate(**fields).to_payload(), w.keys.gate, "gate")
+
+
+def make_shortfall(w: World, cart_env: Envelope, payment_env: Envelope, lines=(("OIL1", 1),), **over) -> Envelope:
+    """A merchant-signed shortfall attestation. refund_paise is priced from the cart unless overridden."""
+    prices = {i["sku"]: i["unit_price_paise"] for i in cart_env.payload["items"]}
+    fields = dict(
+        shortfall_id=new_id("sf"), cart_id=cart_env.payload["cart_id"], payment_id=payment_env.payload["payment_id"],
+        lines=[ShortLine(sku, qty) for sku, qty in lines],
+        refund_paise=sum(qty * prices[sku] for sku, qty in lines if sku in prices),
+        issued_at=w.now, expires_at=w.now + 600,
+    )
+    fields.update(over)
+    return sign(ShortfallAttestation(**fields).to_payload(), w.keys.merchant, f"merchant:{MERCHANT_ID}")
+
+
+def make_refund_input(w: World, att: Envelope, cart: Envelope, payment: Envelope, captured_paise: int = 91_000,
+                      refunded_paise: int = 0, seen=(), now: int | None = None) -> RefundInput:
+    return RefundInput(
+        attestation=att, cart=cart, payment=payment, merchant_pubs={MERCHANT_ID: w.merchant.pubkey_b64},
+        gate_pub_b64=w.keys.pub("gate"), captured_paise=captured_paise, refunded_paise=refunded_paise,
+        seen_shortfalls=list(seen), now=w.now if now is None else now,
+    )
 
 
 def make_gate_input(w: World, intent_env: Envelope, proposal_env: Envelope, cart_env: Envelope,
