@@ -36,7 +36,7 @@ Tested with Python 3.14.7, razorpay 2.0.1, openai 3.7.0, rich 15.0.0 and cryptog
 Everything below the first line also runs offline (`--agent scripted --executor fake`; no `.env` needed):
 
 ```powershell
-python -m pytest -q                                                              # 131 offline tests
+python -m pytest -q                                                              # 132 offline tests
 python -m mandatemesh eval                                                       # 9 poisoned + 5 benign cases
 python -m mandatemesh demo --scenario stepup --agent scripted --executor fake    # answer the [y/N] prompt, or --auto-approve yes|no
 python -m mandatemesh demo --scenario revoke --agent scripted --executor fake
@@ -78,7 +78,7 @@ Exit codes:
 |---|---|
 | 0 | Command succeeded. A demo that ends in `denied`, `declined`, `abandoned`, `no_proposal` or `quote_rejected` is still a clean run: nothing was charged and the ledger says why. |
 | 1 | Configuration error, refusal, or a demo run that ended in outcome `error`. Printed as one line: missing `LLM_*` or `RAZORPAY_*` values, `keys init` over existing keys without `--force`, an invalid `--run-id`, the `poison` refusal above, a Razorpay error while creating or polling the link, or an eval row that is wrong. |
-| 2 | Broken or missing ledger (`ledger verify` fails, or the path is missing or not a file), or a caught runtime error printed as `error: …` (missing `keys/`, unknown payment id in `receipt`, out-of-range `tamper` seq). |
+| 2 | Broken or missing ledger (`ledger verify` fails, or the path is missing or not a file), or a caught runtime error printed as `error: …` (missing `keys/`, unknown payment id in `receipt`, out-of-range `tamper` seq, a malformed `feed.json`). |
 | 130 | Interrupted with Ctrl+C. If a payment link was open, it is cancelled first and `payment.error` is recorded. |
 
 ## Scenarios
@@ -241,7 +241,7 @@ Multiple merchants under one mandate with Razorpay Route split settlement; webho
 ## Repo map
 
 - `mandatemesh/` the package. `gate.py` is the thesis; `crypto.py` envelopes; `mandates.py` strict data; `registry.py`; `merchant.py`; `ledger.py`; `executor.py` (only `razorpay` importer); `agent.py` (only `openai` importer); `orchestrator.py` scenarios and failure handling; `evalset.py`; `cli.py`.
-- `tests/` 131 offline tests (scripted agent, fake executor, fixed clock).
+- `tests/` 132 offline tests (scripted agent, fake executor, fixed clock).
 - `merchant_data/` the feed (10 items: one poisoned description, one off-category, one out of stock) and the `.well-known` manifest.
 - `scripts/smoke_razorpay.py` one-time test-mode check of how failed attempts surface.
 - `docs/` architecture, threat model, decisions, protocol mapping, build log, form answers. `docs/design-spec.md` and `docs/build-plan.md` hold the design spec and the amended implementation plan (process evidence: each amendment records what a review found and what changed).
