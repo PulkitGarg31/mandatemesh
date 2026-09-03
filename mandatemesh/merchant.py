@@ -1,0 +1,74 @@
+"""Mock merchant: an ACP-style feed plus signed, price-locked Cart Mandates. No LLM, no Razorpay."""
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from typing import Callable
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from mandatemesh.crypto import Envelope, public_b64, sign
+from mandatemesh.mandates import AgentProposal, CartItem, CartMandate, new_id
+
+CART_TTL_S = 600
+DEFAULT_FEED = Path(__file__).resolve().parent.parent / "merchant_data" / "feed.json"
+
+
+class MerchantError(Exception):
+    """The merchant refused to quote (unknown SKU, out of stock, wrong merchant, empty cart)."""
+
+
+class MockMerchant:
+    def __init__(
+        self,
+        merchant_id: str,
+        private_key: Ed25519PrivateKey,
+        feed_path: Path = DEFAULT_FEED,
+        clock: Callable[[], int] | None = None,
+    ) -> None:
+        self.merchant_id = merchant_id
+        self._key = private_key
+        self._clock = clock or (lambda: int(time.time()))
+        feed = json.loads(feed_path.read_text(encoding="utf-8"))
+        self._items: dict[str, dict] = {item["item_id"]: item for item in feed["items"]}
+
+    @property
+    def pubkey_b64(self) -> str:
+        return public_b64(self._key)
+
+    def catalog(self) -> list[dict]:
+        return list(self._items.values())
+
+    def catalog_json(self) -> str:
+        return json.dumps(self.catalog(), ensure_ascii=False)
+
+    def quote(self, proposal_env: Envelope) -> Envelope:
+        proposal = AgentProposal.from_payload(proposal_env.payload)
+        if proposal.merchant_id != self.merchant_id:
+            raise MerchantError(f"proposal addressed to '{proposal.merchant_id}', not '{self.merchant_id}'")
+        if not proposal.items:
+            raise MerchantError("empty cart")
+        lines: list[CartItem] = []
+        for it in proposal.items:
+            item = self._items.get(it.sku)
+            if item is None:
+                raise MerchantError(f"unknown sku {it.sku}")
+            if item["availability"] != "in_stock":
+                raise MerchantError(f"{it.sku} is out of stock")
+            if it.qty < 1:
+                raise MerchantError(f"invalid qty {it.qty} for {it.sku}")
+            lines.append(CartItem(sku=it.sku, title=item["title"], category=item["category"], qty=it.qty, unit_price_paise=item["price_paise"]))
+        now = self._clock()
+        cart = CartMandate(
+            cart_id=new_id("cm"),
+            intent_id=proposal.intent_id,
+            proposal_id=proposal.proposal_id,
+            merchant_id=self.merchant_id,
+            items=lines,
+            total_paise=sum(l.qty * l.unit_price_paise for l in lines),
+            currency="INR",
+            issued_at=now,
+            expires_at=now + CART_TTL_S,
+        )
+        return sign(cart.to_payload(), self._key, f"merchant:{self.merchant_id}")
