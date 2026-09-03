@@ -1,5 +1,6 @@
 # MandateMesh Lite Implementation Plan
 
+
 **Goal:** A mandate-scoped buyer agent on Razorpay test mode where an untrusted LLM proposes carts, a deterministic Ed25519-verified policy gate is the only component that can create a money action, and every step lands in a hash-chained audit ledger — with two failures handled gracefully on camera.
 
 **Architecture:** One Python package (`mandatemesh/`) with pure, independently testable modules: `crypto` (signing envelopes) → `mandates` (data) → `registry`, `merchant`, `gate`, `ledger` → `executor` (only Razorpay importer) and `agent` (only OpenAI-client importer) → `orchestrator` (wires a scenario) → `cli`. Tests never touch the network: they use `ScriptedAgent`, `FakeExecutor` and a fixed clock.
