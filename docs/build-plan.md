@@ -3737,3 +3737,11 @@ Task 1 12 · Task 2 10 · Task 3 3 · Task 4 3 · Task 5 5 · Task 6 25 · Task 
 - Test totals (supersede Amendment 5): after Task 10 **100**; after Task 12 **105**. README test count: 105.
 - Task 12 change: `cmd_ledger` must check `path.exists()` first and, if missing, print `no ledger at <path>` and return 2 (an empty ledger verifies as True, and construction no longer creates directories).
 - Docs (Task 14): the hash chain detects modification, insertion, deletion and reordering but not tail truncation or re-hashing of the last line; the receipt's head hash is the out-of-band anchor. Never say "tamper-proof"; say "tamper-evident, anchor the head hash externally".
+
+---
+
+## Amendment 7 (2026-09-03, after Task 8 review)
+
+- `executor.py`: `RazorpayExecutor.__init__` refuses any key not starting with `rzp_test_`; every SDK call passes `timeout=REQUEST_TIMEOUT_S` (10 s); `poll` tolerates up to `MAX_CONSECUTIVE_ERRORS` (5) transient errors per call (re-raises `BadRequestError` immediately), returns `timeout` as soon as the link is `cancelled`/`expired`, and falls back to the link `amount` when `amount_paid` is 0; `_attempts_for` lists attempts from `client.order.payments(order_id)` once the link carries an `order_id` and only falls back to `client.payment.all` matched on `notes.payment_id` before that. Task 8 has **12** tests.
+- Test totals (supersede Amendment 6): after Task 10 **105**; after Task 12 **110**. README test count: 110.
+- Task 0 step 7 / Task 13 step 2 (human smoke test) now must confirm, on a real `failure@razorpay` attempt, that the failed payment entity carries the link's `order_id` (primary path) and/or the link's `notes.payment_id` (fallback). Record which matched in `docs/build-log.md`; if neither matches, the `payfail` scenario cannot detect failures and must be re-planned before recording.
