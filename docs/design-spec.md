@@ -98,10 +98,11 @@ Timestamps are Unix seconds (int). Amounts are integer paise. `now` is always pa
 
 ## 5. Policy gate rules
 
-Evaluated in order; the first failing rule decides. R01–R13 and R17 fail as **DENY**. R14/R15 fail as **STEP_UP** unless a valid step-up token covers the cart, in which case they pass; an invalid token is a **DENY** on R16.
+Evaluated in order; the first failing rule decides. R00–R13 and R17 fail as **DENY**. R14/R15 fail as **STEP_UP** unless a valid step-up token covers the cart, in which case they pass; an invalid token is a **DENY** on R16.
 
 | Rule | Check | On fail |
 |---|---|---|
+| R00 `WELL_FORMED` | intent, proposal and cart payloads parse strictly (exact keys; `int`/`str`/`list` scalar types; nested items) — `MalformedMandate` never escapes the gate | DENY |
 | R01 `AGENT_REGISTERED` | `proposal.agent_id` exists in registry | DENY |
 | R02 `AGENT_ACTIVE` | registry status is `active` | DENY (`AGENT_REVOKED`) |
 | R03 `PROPOSAL_SIG` | proposal envelope verifies with registry pubkey | DENY |

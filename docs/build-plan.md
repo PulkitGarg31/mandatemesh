@@ -3657,3 +3657,57 @@ Step 2's fallback paragraph is obsolete: the Payments-API lookup is now the prim
 
 - `crypto.py` now signs `canonical_json({"alg", "payload", "signer"})` (helper `signing_input`), decodes only strict unpadded base64url, and rejects NaN. Keys stored anywhere (registry, ledger, key files) must be unpadded base64url. No later task text changes; `sign`/`verify` signatures are unchanged.
 - Task 1 has 12 tests. Running totals: 73 after Task 10 becomes **78**; 78 after Task 12 becomes **83**. README test count: 83.
+
+---
+
+## Amendment 3 (2026-09-03, after Task 2 review) — strict parsing and rule R00
+
+**Finding:** dataclasses do not type-check, so a payload with a string amount or an extra key would crash the gate with a `TypeError` instead of yielding a DENY with a trail. Fix: `mandates.from_payload` now parses strictly (exact keys, `int`/`str`/`list` scalar types, nested items) and raises `MalformedMandate(ValueError)`; the gate gains rule **R00_WELL_FORMED** ahead of R01.
+
+### Task 2 (done in commit after 1149009)
+
+`mandatemesh/mandates.py` exports `MalformedMandate`; every `from_payload` is `_parse(cls, p, cls.__name__)`. Task 2 has **10** tests.
+
+### Task 6 changes
+
+In `mandatemesh/gate.py`:
+- Import: `from mandatemesh.mandates import AgentProposal, CartMandate, IntentMandate, MalformedMandate, StepUpToken`.
+- In `evaluate`, replace the three bare `from_payload` lines with:
+```python
+        try:
+            proposal = AgentProposal.from_payload(gi.proposal.payload)
+            intent = IntentMandate.from_payload(gi.intent.payload)
+            cart = CartMandate.from_payload(gi.cart.payload)
+        except MalformedMandate as exc:
+            return fail("R00_WELL_FORMED", f"malformed mandate: {exc}")
+        ok("R00_WELL_FORMED", "intent, proposal and cart payloads are well-formed")
+```
+- In `_check_stepup`, replace `tok = StepUpToken.from_payload(gi.stepup.payload)` with:
+```python
+        try:
+            tok = StepUpToken.from_payload(gi.stepup.payload)
+        except MalformedMandate as exc:
+            return False, f"step-up token malformed: {exc}"
+```
+(the signature check stays first, before parsing).
+
+In `tests/test_gate.py`:
+- `test_happy_path_allows_with_full_trail`: the first three rule ids are now `["R00_WELL_FORMED", "R01_AGENT_REGISTERED", "R02_AGENT_ACTIVE"]`.
+- Add:
+```python
+def test_r00_malformed_proposal_denies(w):
+    intent, proposal, cart = happy_chain(w)
+    malformed = sign({**proposal.payload, "note": "extra field from a chatty model"}, w.keys.agent, proposal.signer)
+    d = decide(w, intent, malformed, cart)
+    assert (d.verdict, d.rule_id) == (DENY, "R00_WELL_FORMED")
+    assert "unknown keys" in d.reason
+```
+Task 6 has **25** tests.
+
+### Spec §5
+
+Rule table gains a first row: `R00 WELL_FORMED — intent, proposal and cart payloads parse strictly (exact keys; int/str/list types) — DENY`. "R01–R13 and R17 fail as DENY" becomes "R00–R13 and R17".
+
+### Test totals (supersede Amendments 1 and 2)
+
+Task 1 12 · Task 2 10 · Task 3 3 · Task 4 3 · Task 5 5 · Task 6 25 · Task 7 5 · Task 8 7 · Task 9 4 · Task 10 10 · Task 11 2 · Task 12 3. Running total after Task 10: **84**; after Task 12: **89**. README test count: 89. The Task 12 CLI test `test_keys_init_then_scripted_fake_demo_and_ledger_commands` tampers seq 3; that is still a valid event index.
