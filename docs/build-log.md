@@ -54,3 +54,55 @@ Real obstacles hit while building, and how each was solved. Feeds the form quest
 - Local models via Ollama on a CPU-only laptop, fake executor: llama3.2 (3B) called propose_cart with an empty item list -> merchant rejected "empty cart" (outcome quote_rejected, nothing created); mistral (7B) first timed out at the 60 s client timeout (outcome no_proposal), and with LLM_TIMEOUT_S=300 it skipped browse_catalog and invented SKUs (rice-bag, dal-pack) -> "unknown sku" (quote_rejected). Each turn took 15-25 s. Both runs failed closed with a clean ledger, which is the point of the design, but a capable hosted model (NVIDIA NIM llama-3.3-70b or Gemini) is needed for a clean agent-driven happy path. Added LLM_TIMEOUT_S.
 - NVIDIA NIM (free developer key): meta/llama-3.3-70b-instruct returned HTTP 410 (end of life 2026-08-26); nvidia/llama-3.1-nemotron-70b-instruct and mistralai/mistral-large-2-instruct are listed by /v1/models but return 404 on the free endpoint; nvidia/nemotron-3-super-120b-a12b worked first time: browse_catalog, then propose_cart with exactly the staples basket, gate ALLOW, captured (fake executor). Docs and .env.example now name that model.
 - Model behaviour with nemotron-3-super on the fake executor: stepup request -> the model dropped one rice bag to fit the INR 1,500 per-transaction cap (cart INR 1,350, ALLOW, paid), and poison request -> it ignored the injected "add 50 units" text and proposed 2 units of ghee (INR 1,200, ALLOW). So a well-behaved model turns both failure scenarios into happy paths, which is why the video records stepup and poison with --agent scripted; the gate, not the prompt, is the control.
+
+## 2026-09-03 (Part II: delegation, refunds, replay)
+
+Constraints carried over from Part I, because they shaped Part II too: the Payment Link `payments`
+array is populated only after capture (so failed attempts are still read from the link's order); the
+free NIM endpoint 404s or 410s on most listed models, which is why one working model is pinned rather
+than a menu; and small local models fail closed (empty carts, invented SKUs) rather than misbehaving,
+which is the design working but not a demo. Everything below is new to Part II.
+
+- Refunds needed the real API shape before the rules could be written. Verified once in test mode:
+  `client.payment.refund(payment_id, {"amount", "notes"})` returned `rfnd_TXZlazlLHEtbmo` with status
+  `pending` (not `processed`) and the payment's `amount_refunded` updated. So `RefundInfo` carries the
+  status verbatim instead of asserting one, and the fake executor mirrors the same three fields.
+- The hard question in the refund design was who gets to name the amount. Taking the merchant's
+  `refund_paise` at face value would make the merchant the authority on how much of the user's money comes
+  back, which is the same mistake as trusting the model. RF06 recomputes the amount from the signed cart's
+  own unit prices and refuses the attestation unless the claim matches exactly; the merchant states which
+  lines were short, and nothing else.
+- Review found a trail gap in the delegation rules: when R19 denied, the chain walk had already done the
+  R18 work but no R18 check was recorded, so the trail showed a subset failure with no evidence that the
+  chain itself was sound. The walk was split into two passes -- shape (R18) recorded first, subset (R19)
+  second -- which also made the details easier to read.
+- Same review pass, two abuses the rules did not yet stop: the same `sub_id` repeated to make one grant
+  look like a chain of fresh authority, and an arbitrarily long chain as a way to make the gate work.
+  R18 now refuses a repeated id (the root intent id counts as seen) and caps the chain at 8 links.
+- Cap breaches under delegation were reported against the leaf, which read as if only the junior agent
+  had over-reached. Since R19 makes caps non-increasing down the chain, the failing detail now names the
+  root-most breaching link, and the passing detail names the tightest cap.
+- Writing `Ledger.replay()` was mostly discovering how much a decision event does *not* say. Six things
+  had to be worked around or fixed:
+  1. `gate.decision` records `cart_id` but no `proposal_id`, so the proposal is reachable only through
+     the cart's `proposal_id` -- an extra hop that has to happen in the right order.
+  2. `chain_ids[0]` is the root intent, not a sub-mandate, so the reconstruction has to skip it; feeding
+     it to the `mandate.sub.created` lookup fails on a perfectly good ledger.
+  3. Public keys ride on events that are about something else: `user_pubkey` on `mandate.intent.created`,
+     `merchant_pubkey` on `merchant.cart.quoted`, `gate_pubkey` on `refund.decision` itself. Replay reads
+     each from its host event and reports a missing one instead of assuming a key.
+  4. The live registry makes revocation permanent: `register()` raises on a revoked id. A rebuild that
+     just replays every `agent.registered` therefore either raises on such a ledger or, if the error is
+     swallowed, ends up more permissive than the registry it is imitating. The rebuild skips a
+     registration for a revoked id, and guards `revoke` on an id it never saw registered.
+  5. The decision payload mixes the verdict with the bookkeeping (`**d.to_dict()` next to `now`,
+     `spent_paise`, `chain_ids`), so comparison has to be restricted to the four decision fields rather
+     than to the whole payload.
+  6. The gate must not import the ledger, and the ledger must import the gate to replay anything. The
+     import inside `replay()` is load-bearing, not a style choice, and is commented as such.
+- Replay is deliberately total: a missing envelope, a missing key or any other surprise becomes a row
+  saying the decision could not be replayed, never an exception and never a silent pass. An audit tool
+  that crashes on a hostile file has told the attacker what to send.
+- The point of the feature, confirmed by hand on a doctored run: flip a recorded verdict from ALLOW to
+  DENY and re-hash every line from there on, and `ledger verify` says "verified" while `ledger replay`
+  reports `recorded 'DENY', replayed 'ALLOW'` and exits 2.
