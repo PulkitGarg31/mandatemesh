@@ -69,7 +69,7 @@ def build_executor(mode: str):
     return RazorpayExecutor(key_id, secret)
 
 
-def print_decision(d: Decision) -> None:
+def print_decision(d: Decision, heading: str = "Gate decision") -> None:
     title = f"Gate decision: {d.verdict}" if d.rule_id == d.verdict else f"Gate decision: {d.verdict} ({d.rule_id})"
     table = Table(title=title)
     table.add_column("rule")
@@ -132,7 +132,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     if result.decision is not None:
         print_decision(result.decision)
     if result.refund_decision is not None:  # money back was decided too, so its trail goes on screen as well
-        print_decision(result.refund_decision)
+        print_decision(result.refund_decision, heading="Refund decision")
     print_ledger(ledger)
     if result.refund_id:
         console.print(f"[green]refund {escape(result.refund_id)} recorded[/]")
