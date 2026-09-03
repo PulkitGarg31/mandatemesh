@@ -1,12 +1,49 @@
-"""The mandate chain as plain data. Signing lives in crypto.py; rules live in gate.py."""
+"""The mandate chain as plain data. Parsing is strict (shape and scalar types); signing lives in crypto.py; business rules live in gate.py."""
 from __future__ import annotations
 
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields, is_dataclass
+from typing import get_args, get_origin, get_type_hints
 
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+class MalformedMandate(ValueError):
+    """A payload does not have the exact shape (keys and scalar types) a mandate class requires."""
+
+
+def _check(value, expected, where: str):
+    if expected is int:
+        if type(value) is not int:  # bool is deliberately not accepted as int
+            raise MalformedMandate(f"{where} must be int, got {type(value).__name__}")
+        return value
+    if expected is str:
+        if not isinstance(value, str):
+            raise MalformedMandate(f"{where} must be str, got {type(value).__name__}")
+        return value
+    if get_origin(expected) is list:
+        (inner,) = get_args(expected)
+        if not isinstance(value, list):
+            raise MalformedMandate(f"{where} must be a list, got {type(value).__name__}")
+        return [_check(v, inner, f"{where}[{i}]") for i, v in enumerate(value)]
+    if is_dataclass(expected):
+        return _parse(expected, value, where)
+    raise MalformedMandate(f"{where}: unsupported field type {expected!r}")
+
+
+def _parse(cls, p, where: str):
+    """Build `cls` from a dict, rejecting unknown keys, missing keys and wrong scalar types."""
+    if not isinstance(p, dict):
+        raise MalformedMandate(f"{where} must be an object, got {type(p).__name__}")
+    hints = get_type_hints(cls)
+    expected_keys = {f.name for f in fields(cls)}
+    unknown = sorted(set(p) - expected_keys)
+    missing = sorted(expected_keys - set(p))
+    if unknown or missing:
+        raise MalformedMandate(f"{where}: unknown keys {unknown}, missing keys {missing}")
+    return cls(**{f.name: _check(p[f.name], hints[f.name], f"{where}.{f.name}") for f in fields(cls)})
 
 
 @dataclass
@@ -45,7 +82,7 @@ class IntentMandate:
 
     @classmethod
     def from_payload(cls, p: dict) -> "IntentMandate":
-        return cls(**p)
+        return _parse(cls, p, cls.__name__)
 
 
 @dataclass
@@ -65,9 +102,7 @@ class AgentProposal:
 
     @classmethod
     def from_payload(cls, p: dict) -> "AgentProposal":
-        data = dict(p)
-        data["items"] = [ProposalItem(**i) for i in p["items"]]
-        return cls(**data)
+        return _parse(cls, p, cls.__name__)
 
 
 @dataclass
@@ -89,9 +124,7 @@ class CartMandate:
 
     @classmethod
     def from_payload(cls, p: dict) -> "CartMandate":
-        data = dict(p)
-        data["items"] = [CartItem(**i) for i in p["items"]]
-        return cls(**data)
+        return _parse(cls, p, cls.__name__)
 
 
 @dataclass
@@ -110,7 +143,7 @@ class StepUpToken:
 
     @classmethod
     def from_payload(cls, p: dict) -> "StepUpToken":
-        return cls(**p)
+        return _parse(cls, p, cls.__name__)
 
 
 @dataclass
@@ -129,4 +162,4 @@ class PaymentMandate:
 
     @classmethod
     def from_payload(cls, p: dict) -> "PaymentMandate":
-        return cls(**p)
+        return _parse(cls, p, cls.__name__)
