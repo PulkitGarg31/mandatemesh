@@ -121,3 +121,48 @@ def test_llm_agent_fails_closed_on_malformed_cart_arguments():
     agent, _ = make_llm_agent(w, [_Msg(tool_calls=[_TC("c1", "propose_cart", {"items": [{"sku": "RICE5", "qty": "two"}], "justification": "x"})])])
     assert agent.propose(intent_obj(w), w.merchant, "buy") is None
     assert "ValueError" in agent.last_error
+
+
+def test_llm_agent_echoes_extra_content_and_names_tool_messages():
+    w = make_world()
+    browse = _TC("c1", "browse_catalog", {"merchant_id": "kirana-one"})
+    browse.extra_content = {"google": {"thought_signature": "sig123"}}
+    script = [
+        _Msg(tool_calls=[browse]),
+        _Msg(tool_calls=[_TC("c2", "propose_cart", {"items": [{"sku": "MILK1", "qty": 1}], "justification": "milk"})]),
+    ]
+    agent, calls = make_llm_agent(w, script)
+    assert agent.propose(intent_obj(w), w.merchant, "milk") is not None
+    echoed = [m for m in calls[1]["messages"] if m.get("role") == "assistant"][0]["tool_calls"][0]
+    assert echoed["extra_content"] == {"google": {"thought_signature": "sig123"}}
+    tool_msg = [m for m in calls[1]["messages"] if m.get("role") == "tool"][0]
+    assert tool_msg["name"] == "browse_catalog"
+    assert "kirana-one" in calls[0]["messages"][0]["content"]
+
+
+def test_llm_agent_accepts_stringified_items():
+    w = make_world()
+    agent, _ = make_llm_agent(w, [_Msg(tool_calls=[_TC("c1", "propose_cart", {"items": '[{"sku": "RICE5", "qty": 1}]', "justification": "rice"})])])
+    env = agent.propose(intent_obj(w), w.merchant, "rice")
+    assert AgentProposal.from_payload(env.payload).items == [ProposalItem("RICE5", 1)]
+
+
+def test_llm_agent_fails_closed_on_invalid_json_arguments():
+    w = make_world()
+    bad = _TC("c1", "propose_cart", {})
+    bad.function.arguments = "{not json"
+    agent, _ = make_llm_agent(w, [_Msg(tool_calls=[bad])])
+    assert agent.propose(intent_obj(w), w.merchant, "buy") is None
+    assert "JSONDecodeError" in agent.last_error
+
+
+def test_llm_agent_empty_turn_gets_placeholder_then_succeeds():
+    w = make_world()
+    script = [
+        _Msg(content=None),
+        _Msg(tool_calls=[_TC("c2", "propose_cart", {"items": [{"sku": "MILK1", "qty": 1}], "justification": "milk"})]),
+    ]
+    agent, calls = make_llm_agent(w, script)
+    assert agent.propose(intent_obj(w), w.merchant, "milk") is not None
+    assistant = [m for m in calls[1]["messages"] if m.get("role") == "assistant"][0]
+    assert assistant["content"] == "(no tool call)"
