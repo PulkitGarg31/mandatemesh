@@ -152,7 +152,7 @@ Retry cap: 2 attempts per cart. Poll timeout is treated like a failure for retry
 
 ## 8. LLM agent
 
-- Client: `openai` package, `OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)`; chat completions with `tools`, `tool_choice="auto"`. Manual loop, max 6 assistant turns.
+- Client: `openai` package, `OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY, timeout=60, max_retries=1)`; chat completions with `tools` and no `tool_choice` (Ollama's compatibility layer rejects it; `auto` is the default). Manual loop, max 6 assistant turns. Tool-call echoes carry any provider `extra_content` (Gemini 3 thought signatures); tool messages carry `name`; an assistant turn without a tool call is recorded as `"(no tool call)"` and nudged.
 - Config via `.env` (`python-dotenv`):
   - Gemini (default): `LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/`, `LLM_MODEL=gemini-3.8-flash`, `LLM_API_KEY=<AI Studio key>`.
   - Ollama: `LLM_BASE_URL=http://localhost:11434/v1`, `LLM_MODEL=llama3.2`, `LLM_API_KEY=ollama`.

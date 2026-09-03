@@ -3745,3 +3745,13 @@ Task 1 12 · Task 2 10 · Task 3 3 · Task 4 3 · Task 5 5 · Task 6 25 · Task 
 - `executor.py`: `RazorpayExecutor.__init__` refuses any key not starting with `rzp_test_`; every SDK call passes `timeout=REQUEST_TIMEOUT_S` (10 s); `poll` tolerates up to `MAX_CONSECUTIVE_ERRORS` (5) transient errors per call (re-raises `BadRequestError` immediately), returns `timeout` as soon as the link is `cancelled`/`expired`, and falls back to the link `amount` when `amount_paid` is 0; `_attempts_for` lists attempts from `client.order.payments(order_id)` once the link carries an `order_id` and only falls back to `client.payment.all` matched on `notes.payment_id` before that. Task 8 has **12** tests.
 - Test totals (supersede Amendment 6): after Task 10 **105**; after Task 12 **110**. README test count: 110.
 - Task 0 step 7 / Task 13 step 2 (human smoke test) now must confirm, on a real `failure@razorpay` attempt, that the failed payment entity carries the link's `order_id` (primary path) and/or the link's `notes.payment_id` (fallback). Record which matched in `docs/build-log.md`; if neither matches, the `payfail` scenario cannot detect failures and must be re-planned before recording.
+
+---
+
+## Amendment 8 (2026-09-03, after Task 8 final fix and Task 9 review)
+
+- `executor.py`: every SDK call carries `timeout=REQUEST_TIMEOUT_S`; a transient error after the deadline returns `timeout` instead of raising. Task 8 has **13** tests.
+- `agent.py`: `OpenAI(..., timeout=60, max_retries=1)`; tool-call echoes carry `extra_content` when the provider returns it (Gemini 3 thought signatures); an assistant turn with no tool call is recorded as `"(no tool call)"` rather than empty; tool messages carry `name`; `items` given as a JSON string is parsed; the system prompt names the bound merchant and asks for tool calls only; `qty` schema has no `minimum`. Task 9 has **11** tests.
+- Test totals (supersede Amendment 7): after Task 10 **110**; after Task 12 **115**. README test count: 115.
+- Task 12 change: render the LLM's `justification` and any `last_error` through `rich.markup.escape` (untrusted text).
+- Docs (Task 14): the prompt rule and wrapper reduce how often the model proposes a bad cart; the gate is the control and bounds whatever is proposed. The wrapper prevents structural escape, not persuasion.
