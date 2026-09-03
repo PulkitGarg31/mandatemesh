@@ -3719,3 +3719,12 @@ Task 1 12 · Task 2 10 · Task 3 3 · Task 4 3 · Task 5 5 · Task 6 25 · Task 
 - `AgentRegistry.register()` refuses an id whose record is revoked (revocation is permanent). Task 4 has **4** tests.
 - Test totals (supersede Amendment 3): running total after Task 10 is **85**; after Task 12 is **90**. README test count: 90.
 - Docs (Task 14): add the registry trust-root caveat to `docs/protocol-mapping.md` ("in-process, unsigned dict seeded by the orchestrator; whoever runs the orchestrator is the root of trust for agent identity; UAP's reported design centralises that in an NPCI-operated repository") and word the threat model as "the agent module is constructed with the agent key only; the LLM never receives key material; all four keys are loaded by the one orchestrator process in this demo".
+
+---
+
+## Amendment 5 (2026-09-03, after Task 6 review)
+
+- `gate.py`: `evaluate` is a guard that calls `_evaluate` and turns any exception into a DENY on `R99_GATE_ERROR`; `rupees` is integer-only; R10 rejects empty carts, `qty < 1`, negative prices and non-positive totals; R08 also checks `proposal.intent_id == intent.intent_id` and `proposal.merchant_id == cart.merchant_id`; ids are interpolated with `!r` and the R00 detail is truncated to 200 chars; R11 detail lists both line sets. Task 6 has **32** tests.
+- Test totals (supersede Amendment 4): after Task 10 **95**; after Task 12 **100**. README test count: 100.
+- Task 10 change: before calling `_decide` for a cart, the orchestrator checks `ledger.of_type("payment.captured")` for the same `cart_id` and, if found, records `gate.replay_refused` and returns `RunResult("denied", ...)` without evaluating. (Within one run this cannot trigger; it is the cross-run replay guard the docs promise.)
+- Docs (Task 14): state that a valid step-up token covers both caps for that one cart, that `approved_total_paise` is an upper bound, and that replay protection is ledger + TTL, not the gate.

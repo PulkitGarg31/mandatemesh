@@ -110,9 +110,9 @@ Evaluated in order; the first failing rule decides. R00–R13 and R17 fail as **
 | R05 `INTENT_NOT_EXPIRED` | `now < intent.expires_at` | DENY |
 | R06 `INTENT_AGENT_MATCH` | `proposal.agent_id == intent.agent_id` | DENY |
 | R07 `CART_SIG` | cart envelope verifies with the merchant's pubkey (from merchant directory) | DENY |
-| R08 `CART_CHAIN` | `cart.intent_id == intent.intent_id` and `cart.proposal_id == proposal.proposal_id` | DENY |
+| R08 `CART_CHAIN` | `proposal.intent_id == intent.intent_id`, `cart.intent_id == intent.intent_id`, `cart.proposal_id == proposal.proposal_id`, `proposal.merchant_id == cart.merchant_id` | DENY |
 | R09 `CART_NOT_EXPIRED` | `now < cart.expires_at` | DENY |
-| R10 `CART_TOTAL_INTEGRITY` | `total_paise == Σ qty × unit_price_paise` | DENY |
+| R10 `CART_TOTAL_INTEGRITY` | cart has ≥ 1 line; every line has `qty ≥ 1` and `unit_price_paise ≥ 0`; `total_paise == Σ qty × unit_price_paise` and `total_paise > 0` | DENY |
 | R11 `CART_MATCHES_PROPOSAL` | cart items (sku, qty) equal proposal items | DENY |
 | R12 `MERCHANT_ALLOWED` | `cart.merchant_id ∈ intent.merchant_allowlist` | DENY |
 | R13 `CATEGORY_ALLOWED` | every item category ∈ `intent.categories` | DENY |
@@ -120,8 +120,9 @@ Evaluated in order; the first failing rule decides. R00–R13 and R17 fail as **
 | R14 `PER_TXN_CAP` | `total_paise ≤ max_per_txn_paise` | STEP_UP |
 | R15 `TOTAL_CAP` | `spent_paise + total_paise ≤ max_total_paise` | STEP_UP |
 | R16 `STEPUP_TOKEN_VALID` | only if a token is supplied: user sig ok, `cart_id` matches, not expired, `approved_total_paise ≥ total_paise` | DENY |
+| R99 `GATE_ERROR` | guard, not a rule: any unexpected exception inside the gate becomes a DENY with the exception type in the trail. The gate never raises. | DENY |
 
-(R17 is listed in the position it is evaluated: after R13, before R14.)
+(R17 is listed in the position it is evaluated: after R13, before R14.) A valid step-up token covers both R14 and R15 for that one cart; `approved_total_paise` is an upper bound and the amount paid is always the cart total. Replay protection for an already-paid cart is the orchestrator's job (ledger check) plus the 10-minute cart/token TTL, not the gate's.
 
 `spent_paise` is the sum of `payment.captured` amounts for this `intent_id`, computed by the orchestrator from the ledger and passed in.
 
