@@ -42,7 +42,7 @@ def cmd_keys_init(args: argparse.Namespace) -> int:
     keys.save(KEYS_DIR)
     for role in ROLES:
         console.print(f"{role:9s} pub {keys.pub(role)}", markup=False)
-    console.print(f"[green]wrote 4 Ed25519 private keys to {KEYS_DIR}/ (gitignored)[/]")
+    console.print(f"[green]wrote {len(ROLES)} Ed25519 private keys to {KEYS_DIR}/ (gitignored)[/]")
     return 0
 
 

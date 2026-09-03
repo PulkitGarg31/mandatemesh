@@ -44,6 +44,15 @@ def test_spent_for_sums_only_captured_for_that_intent(tmp_path):
     assert l.spent_for("im_9") == 0
 
 
+def test_spent_for_subtracts_refunds_and_counts_chain_ids(tmp_path):
+    l = make(tmp_path)
+    l.append("payment.captured", "executor", {"intent_id": "im_1", "chain_ids": ["im_1", "sm_1"], "payment_id": "pm_1", "amount_paise": 91_000})
+    l.append("refund.created", "gate", {"intent_id": "im_1", "payment_id": "pm_1", "amount_paise": 14_000})
+    assert l.spent_for("im_1") == 77_000
+    assert l.spent_for("sm_1") == 77_000
+    assert l.spent_for("sm_9") == 0
+
+
 def test_receipt_collects_related_events(tmp_path):
     l = make(tmp_path)
     l.append("mandate.intent.created", "user", {"intent_id": "im_1"})

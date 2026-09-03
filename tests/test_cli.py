@@ -39,6 +39,15 @@ def test_stepup_auto_approve_and_declined_paths(tmp_path, monkeypatch):
     assert "payment.retry" in [e.type for e in Ledger(tmp_path / "runs" / "f1" / "ledger.jsonl").events()]
 
 
+def test_delegation_scenarios_run_offline(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("FAKE_OUTCOMES", raising=False)
+    assert main(["keys", "init"]) == 0
+    assert main(["demo", "--scenario", "delegate", "--agent", "scripted", "--executor", "fake", "--run-id", "d1"]) == 0
+    assert main(["demo", "--scenario", "overreach", "--agent", "scripted", "--executor", "fake", "--run-id", "o1"]) == 0
+    assert "mandate.sub.created" in [e.type for e in Ledger(tmp_path / "runs" / "d1" / "ledger.jsonl").events()]
+
+
 def test_cli_errors_are_clean_exit_codes(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("FAKE_OUTCOMES", raising=False)

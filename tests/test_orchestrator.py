@@ -30,9 +30,11 @@ def types(ledger):
     return [e.type for e in ledger.events()]
 
 
-def test_scenarios_table_has_the_five_demos():
-    assert set(SCENARIOS) == {"happy", "stepup", "payfail", "poison", "revoke"}
+def test_scenarios_table_has_the_seven_demos():
+    assert set(SCENARIOS) == {"happy", "stepup", "payfail", "poison", "revoke", "delegate", "overreach"}
     assert SCENARIOS["revoke"].revoke_before_proposal and not SCENARIOS["happy"].revoke_before_proposal
+    assert SCENARIOS["happy"].delegation is None
+    assert len(SCENARIOS["delegate"].delegation) == 1 and len(SCENARIOS["overreach"].delegation) == 1
 
 
 def test_happy_path_pays_and_ledger_verifies(tmp_path):
@@ -202,6 +204,49 @@ def test_keyboard_interrupt_closes_the_link_then_propagates(tmp_path):
     t = [e.type for e in ledger.events()]
     assert t[-2:] == ["payment.error", "razorpay.link.cancelled"]
     assert orch.executor.cancelled
+
+
+def test_delegate_scenario_pays_with_chain(tmp_path):
+    orch, sc, ex, ledger = build(tmp_path, "delegate")
+    r = orch.run(sc)
+    assert r.outcome == "paid"
+    t = types(ledger)
+    assert t.count("agent.registered") == 2 and t.count("mandate.sub.created") == 1
+    sub = ledger.of_type("mandate.sub.created")[0].payload
+    assert sub["parent_id"] == r.intent_id and sub["delegator_id"] == "planner-01" and sub["agent_id"] == AGENT_ID
+    decisions = ledger.of_type("gate.decision")
+    assert len(decisions) == 1
+    d = decisions[0].payload
+    assert d["verdict"] == "ALLOW"
+    assert d["chain_ids"] == [r.intent_id, sub["sub_id"]]
+    assert d["now"] == FIXED_NOW and d["spent_paise"] == 0
+    assert d["spent_by"] == {sub["sub_id"]: 0} and d["stepup_id"] is None
+    assert ledger.of_type("payment.captured")[0].payload["chain_ids"] == [r.intent_id, sub["sub_id"]]
+    r18 = [c for c in d["checks"] if c["rule_id"] == "R18_DELEGATION_CHAIN"]
+    assert len(r18) == 1 and r18[0]["passed"] and "planner-01 -> shopper-01" in r18[0]["detail"]
+
+
+def test_overreach_scenario_is_denied_on_r19(tmp_path):
+    orch, sc, ex, ledger = build(tmp_path, "overreach")
+    r = orch.run(sc)
+    assert r.outcome == "denied" and r.decision.rule_id == "R19_DELEGATION_SUBSET" and ex.links == []
+    assert "mandate.sub.created" in types(ledger) and "mandate.payment.created" not in types(ledger)
+
+
+def test_spent_for_counts_the_sub_link(tmp_path):
+    orch, sc, ex, ledger = build(tmp_path, "delegate")
+    r = orch.run(sc)
+    sub_id = ledger.of_type("mandate.sub.created")[0].payload["sub_id"]
+    assert ledger.spent_for(sub_id) == 91_000
+    assert ledger.spent_for(r.intent_id) == 91_000
+
+
+def test_intent_event_carries_user_pubkey_and_cart_event_merchant_pubkey(tmp_path):
+    orch, sc, ex, ledger = build(tmp_path, "happy")
+    r = orch.run(sc)
+    assert r.outcome == "paid"
+    assert ledger.of_type("mandate.intent.created")[0].payload["user_pubkey"] == orch.keys.pub("user")
+    assert ledger.of_type("merchant.cart.quoted")[0].payload["merchant_pubkey"] == orch.merchant.pubkey_b64
 
 
 def test_malformed_cart_is_a_quote_rejection_not_a_crash(tmp_path, monkeypatch):

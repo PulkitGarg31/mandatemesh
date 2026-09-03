@@ -99,12 +99,23 @@ class Ledger:
             return False, self._corrupt_seq
         return True, None
 
-    def spent_for(self, intent_id: str) -> int:
-        return sum(
+    def spent_for(self, mandate_id: str) -> int:
+        """Net money moved under one mandate link: captures under it, minus refunds against those payments.
+
+        A capture counts for its root intent and for every id in its `chain_ids`, so one delegated purchase
+        is charged against the root mandate and against each sub-mandate it was made under.
+        """
+        captured = [
+            e for e in self.of_type("payment.captured")
+            if e.payload.get("intent_id") == mandate_id or mandate_id in (e.payload.get("chain_ids") or [])
+        ]
+        payment_ids = {e.payload.get("payment_id") for e in captured} - {None}
+        refunded = sum(
             int(e.payload.get("amount_paise", 0))
-            for e in self.of_type("payment.captured")
-            if e.payload.get("intent_id") == intent_id
+            for e in self.of_type("refund.created")
+            if e.payload.get("payment_id") in payment_ids
         )
+        return max(0, sum(int(e.payload.get("amount_paise", 0)) for e in captured) - refunded)
 
     def receipt(self, payment_id: str) -> str:
         created = next((e for e in self.of_type("mandate.payment.created") if e.payload.get("payment_id") == payment_id), None)
