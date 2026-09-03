@@ -58,6 +58,18 @@ def test_refund_scenario_runs_offline_and_records_the_refund(tmp_path, monkeypat
     assert "recorded" in capsys.readouterr().out
 
 
+def test_ledger_replay_command(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("FAKE_OUTCOMES", raising=False)
+    assert main(["keys", "init"]) == 0
+    assert main(["demo", "--scenario", "refund", "--agent", "scripted", "--executor", "fake", "--run-id", "rp1"]) == 0
+    capsys.readouterr()
+    ledger = tmp_path / "runs" / "rp1" / "ledger.jsonl"
+    assert main(["ledger", "replay", str(ledger)]) == 0
+    assert "2 decisions replayed, 2 identical" in capsys.readouterr().out
+    assert main(["ledger", "replay", str(tmp_path / "nope.jsonl")]) == 2
+
+
 def test_cli_errors_are_clean_exit_codes(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("FAKE_OUTCOMES", raising=False)

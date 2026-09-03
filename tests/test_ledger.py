@@ -1,6 +1,13 @@
 import json
 
+from mandatemesh.agent import ScriptedAgent
+from mandatemesh.executor import FakeExecutor
+from mandatemesh.fixtures import AGENT_ID, FIXED_NOW, MERCHANT_ID
+from mandatemesh.keys import Keys
 from mandatemesh.ledger import GENESIS_HASH, Ledger, compute_hash, tamper
+from mandatemesh.merchant import MockMerchant
+from mandatemesh.orchestrator import SCENARIOS, Orchestrator
+from mandatemesh.registry import AgentRegistry
 
 
 def make(tmp_path, clock=None):
@@ -130,3 +137,87 @@ def test_receipt_reports_a_broken_chain(tmp_path):
     assert "Chain: verified" in l.receipt("pm_1") and "payment id not reported" in l.receipt("pm_1")
     tamper(l.path, 0)
     assert "Chain: BROKEN at seq 0" in make(tmp_path).receipt("pm_1")
+
+
+# --- Part II: offline replay of every gate decision ---
+
+
+def record_run(dir_path, scenario_name, outcomes=("paid",), approve=True):
+    """Run one scenario for real (scripted agent, fake executor, fixed clock) and return its ledger path."""
+    sc = SCENARIOS[scenario_name]
+    keys = Keys.generate()
+    clock = lambda: FIXED_NOW  # noqa: E731
+    agent = ScriptedAgent(AGENT_ID, keys.agent, list(sc.scripted_items), clock=clock)
+    ledger = Ledger(dir_path / "ledger.jsonl", clock=clock)
+    Orchestrator(
+        keys, AgentRegistry(), MockMerchant(MERCHANT_ID, keys.merchant, clock=clock), agent,
+        FakeExecutor(list(outcomes)), ledger, approver=lambda cart, decision: approve, say=lambda s: None,
+        clock=clock, poll_timeout_s=1, poll_interval_s=0,
+    ).run(sc)
+    return ledger.path
+
+
+def read_rows(path):
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def write_rows(path, rows, start=0):
+    """Write the rows back, recomputing seq/prev_hash/hash from `start` so the chain still verifies."""
+    prev = GENESIS_HASH if start == 0 else rows[start - 1]["hash"]
+    for i in range(start, len(rows)):
+        rows[i]["seq"], rows[i]["prev_hash"] = i, prev
+        unhashed = {k: rows[i][k] for k in ("seq", "id", "ts", "type", "actor", "payload", "prev_hash")}
+        rows[i]["hash"] = prev = compute_hash(prev, unhashed)
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=True) for r in rows) + "\n", encoding="utf-8")
+
+
+def test_replay_matches_a_recorded_happy_run(tmp_path):
+    path = record_run(tmp_path, "happy")
+    report = Ledger(path).replay()  # reloaded from disk: nothing but the file
+    assert report.decisions == 1 and report.identical == 1
+    assert report.first_divergence is None
+    assert [r.kind for r in report.rows] == ["purchase"]
+    assert report.rows[0].recorded == report.rows[0].replayed == "ALLOW"
+
+
+def test_replay_matches_delegated_stepup_and_refund_runs(tmp_path):
+    for scenario, expected in (("delegate", 1), ("stepup", 2), ("refund", 2)):
+        run_dir = tmp_path / scenario
+        report = Ledger(record_run(run_dir, scenario)).replay()
+        assert report.decisions == expected, (scenario, report.rows)
+        assert report.identical == expected, (scenario, report.first_divergence)
+        assert report.first_divergence is None
+    refund = Ledger(tmp_path / "refund" / "ledger.jsonl").replay()
+    assert [r.kind for r in refund.rows] == ["purchase", "refund"]
+    assert any(r.kind == "refund" and r.replayed == "ALLOW" for r in refund.rows)
+
+
+def test_replay_detects_a_doctored_verdict(tmp_path):
+    path = record_run(tmp_path, "happy")
+    rows = read_rows(path)
+    idx = next(i for i, r in enumerate(rows) if r["type"] == "gate.decision")
+    rows[idx]["payload"]["verdict"] = "DENY"
+    write_rows(path, rows, start=idx)  # re-hash from here on, so only replay can catch it
+
+    ledger = Ledger(path)
+    assert ledger.verify() == (True, None)
+    report = ledger.replay()
+    assert report.decisions == 1 and report.identical == 0
+    bad = report.first_divergence
+    assert bad is not None and bad.seq == idx
+    assert bad.recorded == "DENY" and bad.replayed == "ALLOW"
+    assert "verdict" in bad.note
+
+
+def test_replay_reports_a_missing_envelope_instead_of_raising(tmp_path):
+    path = record_run(tmp_path, "happy")
+    rows = [r for r in read_rows(path) if r["type"] != "merchant.cart.quoted"]
+    write_rows(path, rows)
+
+    ledger = Ledger(path)
+    assert ledger.verify() == (True, None)
+    report = ledger.replay()
+    assert report.decisions == 1 and report.identical == 0
+    bad = report.first_divergence
+    assert bad is not None and bad.identical is False
+    assert "cart" in bad.note and bad.replayed == ""

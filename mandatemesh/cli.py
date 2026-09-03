@@ -154,6 +154,23 @@ def cmd_ledger(args: argparse.Namespace) -> int:
     if args.ledger_cmd == "receipt":
         console.print(Ledger(path).receipt(args.payment_id), markup=False)
         return 0
+    if args.ledger_cmd == "replay":
+        report = Ledger(path).replay()
+        if report.rows:
+            table = Table(title=f"Replay of {escape(str(path))}: every gate decision, recomputed from this file alone")
+            for col in ("seq", "kind", "recorded", "replayed", "ok"):
+                table.add_column(col)
+            for row in report.rows:
+                table.add_row(str(row.seq), row.kind, row.recorded, row.replayed, "[green]yes[/]" if row.identical else "[red]NO[/]")
+            console.print(table)
+        console.print(f"{report.decisions} decisions replayed, {report.identical} identical", markup=False)
+        diverged = report.first_divergence
+        if diverged is not None:
+            console.print(f"[red]seq {diverged.seq}: {escape(diverged.note)}[/]")
+            return 2
+        if not report.rows:
+            console.print("no gate decisions in this ledger", markup=False)
+        return 0
     tamper(path, args.seq)
     console.print(f"[yellow]edited seq {args.seq} in {escape(str(path))} without re-hashing; now run: ledger verify[/]")
     return 0
@@ -192,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--poll-timeout", type=int, default=180, help="seconds to wait per payment attempt")
     d.set_defaults(func=cmd_demo)
 
-    l = sub.add_parser("ledger", help="verify, export or tamper a ledger")
+    l = sub.add_parser("ledger", help="verify, replay, export or tamper a ledger")
     ls = l.add_subparsers(dest="ledger_cmd", required=True)
     v = ls.add_parser("verify")
     v.add_argument("path")
@@ -201,6 +218,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("path")
     r.add_argument("payment_id")
     r.set_defaults(func=cmd_ledger)
+    rp = ls.add_parser("replay", help="re-decide every gate decision from the ledger alone and compare")
+    rp.add_argument("path")
+    rp.set_defaults(func=cmd_ledger)
     t = ls.add_parser("tamper")
     t.add_argument("path")
     t.add_argument("seq", type=int)
