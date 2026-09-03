@@ -3773,3 +3773,13 @@ Task 1 12 · Task 2 10 · Task 3 3 · Task 4 3 · Task 5 5 · Task 6 25 · Task 
 - `evalset.py` has 9 poisoned cases (adds `forged_intent_signature` → R04) and 5 benign cases (adds `benign_stepup_approved` → ALLOW with a valid step-up token); `tests/test_eval.py` pins every case's `(verdict, rule_id)`. Still 2 tests; suite stays at **121** after Task 11 and **124** after Task 12.
 - Task 12 change: the `eval` table keeps the `verdict` column so STEP_UP is visible next to the DENYs.
 - README (Task 14) eval section must say, verbatim in spirit: "These are 14 hand-built inputs, one per attack class, run against the deterministic gate with no LLM and no sampling, so 100% is expected by construction; the evidence is the rule column (nine distinct rules fire) and the benign boundary cases (exactly at the per-transaction cap; prior spend just under the total cap; an approved step-up), which show the gate is not simply denying everything." and "Blocked means DENY or STEP_UP: the catalog-injection case (50 units of ghee) is escalated to a signed human step-up bound to that exact cart and total, not silently denied." The README eval table has 9/9 blocked and 0/5 wrongly blocked.
+
+---
+
+## Amendment 11 (2026-09-03, after Task 12 review and the polish pass)
+
+- `cli.py`: `main()` turns `KeyboardInterrupt` into exit 130 and `FileNotFoundError`/`KeyError`/`ValueError`/`PermissionError` into a one-line `error:` message with exit 2 (no tracebacks on camera); the step-up prompt declines when stdin is not a TTY and on EOF; `--run-id` must be a plain directory name; `ledger` subcommands require a file (`is_file`); `poison` with `--auto-approve yes` against the real executor is refused; the step-up prompt uses `orchestrator.inr`.
+- `orchestrator._collect` catches `KeyboardInterrupt`, records `payment.error` ("KeyboardInterrupt"), closes the link, then re-raises.
+- `gate.py` R10 checks the empty cart before computing bad lines (cosmetic); `test_gate.py` now has a real huge-total test (STEP_UP R14 on a 10**400 cart) and an R99 test.
+- Test totals: **128** after the polish pass. The README count must be copied from `python -m pytest -q`.
+- Task 15 recording note: with the fake executor, the retry path only shows if `FAKE_OUTCOMES=failed,paid` is exported; record `payfail` against the real executor.
