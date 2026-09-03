@@ -45,6 +45,8 @@ Real obstacles hit while building, and how each was solved. Feeds the form quest
 - Rich interpreted the orchestrator's `[gate]` / `[razorpay]` prefixes as markup tags and swallowed them.
   Progress lines print with markup disabled, and LLM text (justification, errors) is escaped before it
   reaches a Rich table.
+- Final review: a hand-edited feed with a float price crashed the run; feed is now validated at load and a
+  malformed signed cart becomes a recorded quote rejection; receipt now states chain status.
 - (pending) smoke test result: which field tied the failed payment to the link
   (`order_id` on the payment entity, `notes.payment_id`, or both). No real Razorpay call has been made yet;
   every ledger under `runs/` so far is a fake-executor run.

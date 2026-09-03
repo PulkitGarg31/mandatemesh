@@ -5,7 +5,7 @@
 | Component | May read | Signs with | May call |
 |---|---|---|---|
 | Buyer agent (`agent.py`) | mandate summary (caps, merchants, categories), the user's request, the catalog as untrusted JSON | agent key (Agent Proposal only) | the LLM endpoint only (`LLMAgent`); nothing (`ScriptedAgent`) |
-| Mock merchant (`merchant.py`) | its own feed, the signed proposal | merchant key (Cart Mandate) | nothing |
+| Mock merchant (`merchant.py`) | its own feed (validated at load: five required keys, integer non-negative `price_paise`), the signed proposal | merchant key (Cart Mandate) | nothing |
 | Registry (`registry.py`) | agent id → public key, status | — | nothing |
 | Policy gate (`gate.py`) | the intent, proposal and cart envelopes, an optional step-up envelope, the user public key, the merchant public keys, prior spend, `now` | — (pure function; returns a `Decision`) | nothing: no I/O, no clock, no LLM, no network |
 | Executor (`executor.py`) | a signed Payment Mandate | — | Razorpay: the only module that imports `razorpay` and the only holder of the Razorpay credentials |
@@ -49,7 +49,7 @@ sequenceDiagram
     O->>L: payment.captured
 ```
 
-Before the gate runs, the orchestrator checks the ledger for a `payment.captured` event with the same cart id and refuses a replay (`orchestrator.replay_refused`). Prior spend is the sum of `payment.captured` amounts for the intent, computed from the ledger and passed into the gate.
+A merchant refusal, or a signed cart that fails strict parsing, is recorded as `merchant.quote.rejected` and the run stops with outcome `quote_rejected`; nothing is evaluated. Before the gate runs, the orchestrator checks the ledger for a `payment.captured` event with the same cart id and refuses a replay (`orchestrator.replay_refused`). Prior spend is the sum of `payment.captured` amounts for the intent, computed from the ledger and passed into the gate.
 
 ## Why the gate is a pure function
 
@@ -65,4 +65,4 @@ After that the executor polls: `payment_link.fetch` for `status == "paid"` (capt
 
 ## Ledger
 
-`runs/<run-id>/ledger.jsonl`, one event per line: `{seq, id, ts, type, actor, payload, prev_hash, hash}` with `hash = sha256(prev_hash + canonical(event without hash))`. Payloads are normalised through JSON before hashing so what is hashed is exactly what a reload produces. `verify()` recomputes every hash and reports the first bad position (a hash mismatch, a `seq` out of place, or a line that does not parse). The chain detects modification, insertion, deletion and reordering; it does not detect tail truncation or a re-hashed last line, so the receipt's head hash is the out-of-band anchor. Tamper-evident, not tamper-proof.
+`runs/<run-id>/ledger.jsonl`, one event per line: `{seq, id, ts, type, actor, payload, prev_hash, hash}` with `hash = sha256(prev_hash + canonical(event without hash))`. Payloads are normalised through JSON before hashing so what is hashed is exactly what a reload produces. `verify()` recomputes every hash and reports the first bad position (a hash mismatch, a `seq` out of place, or a line that does not parse). The chain detects modification, insertion, deletion and reordering; it does not detect tail truncation or a re-hashed last line, so the receipt's head hash is the out-of-band anchor. Tamper-evident, not tamper-proof. The receipt re-verifies the chain it is exported from and prints `- Chain: verified` or `- Chain: BROKEN at seq N` next to the head hash.
