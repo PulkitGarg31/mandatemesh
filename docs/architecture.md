@@ -43,7 +43,7 @@ sequenceDiagram
     O->>X: create_payment_link(Payment Mandate)
     X->>R: create Payment Link (notes = mandate ids)
     O->>L: razorpay.link.created
-    U->>R: pays the link (success@razorpay)
+    U->>R: pays the link (test checkout: Success)
     X->>R: poll the link, then the order's payments
     X-->>O: paid
     O->>L: payment.captured

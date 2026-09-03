@@ -47,7 +47,7 @@ SCENARIOS: dict[str, Scenario] = {
     "happy": Scenario(
         "happy", HAPPY_REQUEST, 200_000, 150_000, ["kirana-one"], ["groceries"],
         [[ProposalItem("RICE5", 1), ProposalItem("DAL1", 2), ProposalItem("OIL1", 1)]],
-        "Within mandate -> ALLOW -> Payment Link -> pay with success@razorpay",
+        "Within mandate -> ALLOW -> Payment Link -> pay on the test checkout (mock bank: Success)",
     ),
     "stepup": Scenario(
         "stepup", "Stock up for the month: two bags of rice, a kilo of ghee, a pack of dal and a bottle of oil.",
@@ -58,7 +58,7 @@ SCENARIOS: dict[str, Scenario] = {
     "payfail": Scenario(
         "payfail", HAPPY_REQUEST, 200_000, 150_000, ["kirana-one"], ["groceries"],
         [[ProposalItem("RICE5", 1), ProposalItem("DAL1", 2), ProposalItem("OIL1", 1)]],
-        "Pay with failure@razorpay -> ledger records failure -> gate re-authorizes one retry -> pay again or abandon",
+        "Pay on the test checkout with Failure -> ledger records failure -> gate re-authorizes one retry -> pay again with Success or abandon",
     ),
     "poison": Scenario(
         "poison", "Buy some ghee for the month.", 200_000, 150_000, ["kirana-one"], ["groceries"],
@@ -207,7 +207,7 @@ class Orchestrator:
         try:
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 attempts = attempt
-                self.say(f"[razorpay] waiting for payment (attempt {attempt}/{MAX_ATTEMPTS}) - pay with UPI success@razorpay or failure@razorpay")
+                self.say(f"[razorpay] waiting for payment (attempt {attempt}/{MAX_ATTEMPTS}) - open the link; test checkout: Netbanking mock bank -> Failure or Success (or UPI success@razorpay / failure@razorpay where UPI is enabled)")
                 result = self.executor.poll(link.link_id, self.poll_timeout_s, self.poll_interval_s, seen)
                 if result.outcome == "paid":
                     return self._captured(base, decision, pm, link, attempt, result.payment_id, result.amount_paise)

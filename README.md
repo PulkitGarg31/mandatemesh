@@ -19,7 +19,7 @@ Track 01 asks: *"Every money action explainable, bounded and gated. Show the aud
 | **Bounded** | Total cap, per-transaction cap, merchant allow-list, category list, currency and expiry are enforced by a pure function (`gate.py`: 18 ordered rules plus an error guard), not by a prompt. Cap breaches require a user-signed step-up token bound to that exact cart and total. |
 | **Gated** | The LLM can only browse a catalog and propose a cart. The agent module is constructed with the agent signing key only; the LLM never receives key material or a Razorpay credential. A Payment Mandate is signed with the gate key only after the gate returns ALLOW, and only the executor (which accepts nothing but a Payment Mandate) calls Razorpay. |
 | **Audit trail** | Append-only JSONL ledger; each event hashes the previous one. `ledger verify` reports the first broken position; `ledger tamper` shows it on camera. |
-| **Failures handled** | Cap exceeded → signed human step-up, or nothing happens. Payment fails (`failure@razorpay`) → ledger records it, the gate re-authorizes one retry, then the link is cancelled and the run says so. Poisoned catalog text → the gate bounds whatever the model proposes. Revoked agent → denied at R02. Razorpay errors → recorded, link closed, honest `error` outcome. |
+| **Failures handled** | Cap exceeded → signed human step-up, or nothing happens. Payment fails (mock bank Failure) → ledger records it, the gate re-authorizes one retry, then the link is cancelled and the run says so. Poisoned catalog text → the gate bounds whatever the model proposes. Revoked agent → denied at R02. Razorpay errors → recorded, link closed, honest `error` outcome. |
 
 ## Quickstart (5 commands)
 
@@ -44,11 +44,11 @@ python -m mandatemesh demo --scenario poison --agent scripted --executor fake --
 $env:FAKE_OUTCOMES = "failed,paid"; python -m mandatemesh demo --scenario payfail --agent scripted --executor fake
 ```
 
-Then the real thing (Razorpay test mode; open the printed link and pay with UPI id `success@razorpay` or `failure@razorpay`):
+Then the real thing (Razorpay test mode; open the printed link, choose Netbanking, and click Success or Failure on the mock bank page; accounts with UPI enabled can also use the test ids `success@razorpay` / `failure@razorpay`):
 
 ```powershell
 python -m mandatemesh demo --scenario happy                        # LLM agent + real Razorpay test link
-python -m mandatemesh demo --scenario payfail --poll-timeout 90    # pay with failure@razorpay first, then success@razorpay
+python -m mandatemesh demo --scenario payfail --poll-timeout 90    # click Failure on the mock bank page first, then Success
 python -m mandatemesh demo --scenario stepup --agent scripted      # the scripted agent proposes the INR 1,800 cart deterministically
 ```
 
@@ -226,6 +226,7 @@ Details: `docs/protocol-mapping.md`.
 - Payment Links must expire ≥ 15 minutes out (this uses 20), so an "expiry then refund" demo was cut.
 - **No webhooks** (they need a public URL); the executor polls the Payment Link for capture and the Payments API (via the link's order) for failed attempts, matched by the link's order id or the mandate id in its notes.
 - Razorpay's Payment Link `payments` array lists only captured payments, so failed attempts are read from `GET /orders/{id}/payments`; the smoke script `scripts/smoke_razorpay.py` confirms this on a real `failure@razorpay` attempt.
+- UPI test ids (`success@razorpay` / `failure@razorpay`) appear only when UPI is enabled on the test account; on this account the checkout offers Netbanking, whose mock bank page has Success and Failure buttons that behave the same way (verified by the smoke test).
 - The payment itself is completed manually in the browser with Razorpay's test UPI ids; polling runs every 3 s for up to `--poll-timeout` seconds per attempt, two attempts per cart.
 - The hash chain detects modification, insertion, deletion and reordering but not tail truncation or re-hashing of the last line; anchor the receipt's head hash externally. It is tamper-evident, not tamper-proof.
 - Replay: a cart id with a capture already in this ledger is refused before the gate runs; freshness otherwise comes from the intent (24 h), cart (10 min) and step-up (10 min) TTLs.

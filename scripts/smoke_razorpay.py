@@ -4,7 +4,7 @@ Usage:
     python scripts/smoke_razorpay.py             # create a link and poll it
     python scripts/smoke_razorpay.py <plink_id>  # resume polling an existing link (no new link)
 
-Pay the printed link first with UPI `failure@razorpay`, then again with `success@razorpay`.
+Pay the printed link first with a FAILED test payment (Netbanking mock bank -> Failure, or UPI failure@razorpay where enabled), then a successful one (Success / success@razorpay).
 The link's own `payments` array only lists captured payments, so failed attempts are looked up
 via the Payments API (`payment.all`) and printed with the fields the executor will need.
 """
@@ -46,8 +46,8 @@ else:
         }
     )
     print("OPEN AND PAY:", link["short_url"])
-    print("  1) On the checkout page choose UPI -> 'UPI ID' -> enter failure@razorpay -> Pay  (expect a FAILED attempt)")
-    print("  2) Then open the SAME link again and pay with success@razorpay              (expect CAPTURED)")
+    print("  1) On the checkout page choose Netbanking -> any bank -> click Failure on the mock bank page (or UPI failure@razorpay)")
+    print("  2) Then open the SAME link again -> Netbanking -> click Success (or UPI success@razorpay)   (expect CAPTURED)")
     print("  The link's `payments` array only shows captured payments; failed attempts appear below as PAYMENT entries.")
     print("link id:", link["id"], "| expires at", time.strftime("%H:%M:%S", time.localtime(link["expire_by"])))
 

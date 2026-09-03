@@ -47,6 +47,6 @@ Real obstacles hit while building, and how each was solved. Feeds the form quest
   reaches a Rich table.
 - Final review: a hand-edited feed with a float price crashed the run; feed is now validated at load and a
   malformed signed cart becomes a recorded quote rejection; receipt now states chain status.
-- (pending) smoke test result: which field tied the failed payment to the link
+- Smoke test on a real test-mode link (plink_TXXr4OVtoqtI72): UPI is not enabled on this test account, so the checkout offers Cards, Netbanking and Wallet; the Netbanking mock bank page gives Success/Failure buttons. The failed attempt (pay_TXXv8QpFsEHJBo, BAD_REQUEST_ERROR "declined by the bank") appeared only via the Payments API and carried both the link order_id (order_TXXrrD9u8G8WJS) and the link notes.payment_id, so the executor primary (order) and fallback (notes) lookups both work; the captured attempt appeared in the link own payments array. Docs and prompts switched from "pay with UPI ids" to "mock bank Success/Failure".
   (`order_id` on the payment entity, `notes.payment_id`, or both). No real Razorpay call has been made yet;
   every ledger under `runs/` so far is a fake-executor run.
