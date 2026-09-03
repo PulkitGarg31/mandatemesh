@@ -1,4 +1,4 @@
-"""Abuse eval, 9 poisoned and 5 benign: every poisoned, forged or out-of-mandate proposal must be blocked; every benign one must pass.
+"""Abuse eval, 11 poisoned and 6 benign: every poisoned, forged or out-of-mandate proposal must be blocked; every benign one must pass.
 
 'Blocked' means the gate did not return ALLOW (DENY or STEP_UP both keep money from moving without a human).
 """
@@ -7,7 +7,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from mandatemesh.crypto import sign
-from mandatemesh.fixtures import AGENT_ID, POISON_ITEMS, STEPUP_ITEMS, World, happy_chain, make_gate_input, make_stepup, make_world, resign_cart
+from mandatemesh.fixtures import (
+    AGENT_ID,
+    POISON_ITEMS,
+    STEPUP_ITEMS,
+    World,
+    delegated_chain,
+    happy_chain,
+    make_gate_input,
+    make_stepup,
+    make_world,
+    resign_cart,
+)
 from mandatemesh.gate import ALLOW, GateInput, PolicyGate
 from mandatemesh.mandates import ProposalItem
 
@@ -75,6 +86,16 @@ def build_cases() -> list[Case]:
     i, p, c = happy_chain(w)
     add("forged_intent_signature", True, w, make_gate_input(w, sign(i.payload, w.keys.agent, i.signer), p, c))
 
+    # a delegator cannot hand out more than it holds: the sub-mandate's caps are above the intent's
+    w = make_world()
+    i, s, p, c = delegated_chain(w, max_total_paise=500_000, max_per_txn_paise=500_000)
+    add("delegation_overreach", True, w, make_gate_input(w, i, p, c, chain=[s]))
+
+    # a sub-mandate the delegator never signed: signed with the merchant key, presented as the planner's
+    w = make_world()
+    i, s, p, c = delegated_chain(w, delegator_key=w.keys.merchant)
+    add("delegation_forged_sub", True, w, make_gate_input(w, i, p, c, chain=[s]))
+
     # ---- benign (must pass) ----
     w = make_world()
     i, p, c = happy_chain(w)
@@ -95,6 +116,11 @@ def build_cases() -> list[Case]:
     w = make_world()
     i, p, c = happy_chain(w, items=STEPUP_ITEMS)
     add("benign_stepup_approved", False, w, make_gate_input(w, i, p, c, stepup=make_stepup(w, i, c)))
+
+    # a properly narrowed one-link chain: user -> planner (2,000/1,500) -> shopper (1,000/1,000) buying the 910 basket
+    w = make_world()
+    i, s, p, c = delegated_chain(w)
+    add("benign_delegated", False, w, make_gate_input(w, i, p, c, chain=[s]))
 
     return cases
 
