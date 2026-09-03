@@ -9,6 +9,9 @@ from mandatemesh.mandates import PaymentMandate
 
 LINK_TTL_S = 20 * 60  # Razorpay requires expire_by >= 15 min in the future
 PAID_STATUSES = {"captured", "authorized", "paid"}
+REQUEST_TIMEOUT_S = 10          # per HTTP call; the SDK sets none by default
+MAX_CONSECUTIVE_ERRORS = 5      # transient errors tolerated inside one poll() before giving up
+DEAD_LINK_STATUSES = {"cancelled", "expired"}
 
 
 @dataclass
@@ -76,6 +79,8 @@ class RazorpayExecutor:
     def __init__(self, key_id: str, key_secret: str, clock: Callable[[], int] | None = None) -> None:
         import razorpay  # imported here so tests never need the SDK loaded
 
+        if not key_id.startswith("rzp_test_"):
+            raise ValueError("RazorpayExecutor only runs with TEST keys (rzp_test_...); refusing a live key")
         self.client = razorpay.Client(auth=(key_id, key_secret))
         self._clock = clock or (lambda: int(time.time()))
 
@@ -96,13 +101,25 @@ class RazorpayExecutor:
 
     def poll(self, link_id: str, timeout_s: int, interval_s: float, seen: set[str]) -> PollResult:
         deadline = time.monotonic() + timeout_s
+        errors = 0
+        attempts: list[Attempt] = []
         while True:
-            data = self.client.payment_link.fetch(link_id)
-            attempts = self._attempts_for(data)
+            try:
+                data = self.client.payment_link.fetch(link_id, timeout=REQUEST_TIMEOUT_S)
+                attempts = self._attempts_for(data)
+                errors = 0
+            except Exception as exc:  # network blips and 5xx must not abort a 3-minute wait
+                errors += 1
+                if type(exc).__name__ == "BadRequestError" or errors >= MAX_CONSECUTIVE_ERRORS or time.monotonic() >= deadline:
+                    raise
+                time.sleep(interval_s)
+                continue
             if data.get("status") == "paid":
                 paid = next((a for a in attempts if a.status in PAID_STATUSES), None)
-                amount = int(data.get("amount_paid", 0)) or (paid.amount_paise if paid else 0)
+                amount = int(data.get("amount_paid") or 0) or int(data.get("amount") or 0) or (paid.amount_paise if paid else 0)
                 return PollResult("paid", paid.payment_id if paid else None, amount, attempts)
+            if data.get("status") in DEAD_LINK_STATUSES:
+                return PollResult("timeout", attempts=attempts)
             for a in attempts:
                 if a.status == "failed" and a.payment_id not in seen:
                     seen.add(a.payment_id)
@@ -114,20 +131,27 @@ class RazorpayExecutor:
     def _attempts_for(self, link: dict) -> list[Attempt]:
         """Every payment attempt against this link.
 
-        The link's own `payments` array lists only captured payments, so failed attempts come from the
-        Payments API, matched by the link's order_id or by the payment-mandate id in the link's notes.
+        The link's own `payments` array lists only captured payments. Once a customer has attempted payment
+        the link carries an `order_id`, and `GET /orders/{id}/payments` lists every attempt including failed
+        ones. Before that, fall back to the Payments list matched by the payment-mandate id in the link's notes.
         """
-        wanted_pm = (link.get("notes") or {}).get("payment_id")
-        order_id = link.get("order_id")
         by_id: dict[str, Attempt] = {}
+
+        def add(pid: object, status: object, amount: object) -> None:
+            if pid and str(pid) not in by_id:
+                by_id[str(pid)] = Attempt(str(pid), str(status or ""), int(amount or 0))
+
         for p in link.get("payments") or []:
-            pid = str(p.get("payment_id", ""))
-            by_id[pid] = Attempt(pid, str(p.get("status", "")), int(p.get("amount", 0)))
-        for p in self.client.payment.all({"count": 25}).get("items", []):
-            matches_order = order_id is not None and p.get("order_id") == order_id
-            matches_notes = wanted_pm is not None and (p.get("notes") or {}).get("payment_id") == wanted_pm
-            if (matches_order or matches_notes) and p["id"] not in by_id:
-                by_id[p["id"]] = Attempt(p["id"], str(p.get("status", "")), int(p.get("amount", 0)))
+            add(p.get("payment_id"), p.get("status"), p.get("amount"))
+        order_id = link.get("order_id")
+        wanted_pm = (link.get("notes") or {}).get("payment_id")
+        if order_id:
+            for p in self.client.order.payments(order_id, timeout=REQUEST_TIMEOUT_S).get("items", []):
+                add(p.get("id"), p.get("status"), p.get("amount"))
+        elif wanted_pm:
+            for p in self.client.payment.all({"count": 25}, timeout=REQUEST_TIMEOUT_S).get("items", []):
+                if (p.get("notes") or {}).get("payment_id") == wanted_pm:
+                    add(p.get("id"), p.get("status"), p.get("amount"))
         return sorted(by_id.values(), key=lambda a: a.payment_id)
 
     def cancel(self, link_id: str) -> None:
