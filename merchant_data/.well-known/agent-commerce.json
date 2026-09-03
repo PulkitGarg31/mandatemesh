@@ -2,7 +2,7 @@
   "merchant_id": "kirana-one",
   "name": "Kirana One",
   "protocol_notes": "ACP-style product feed; carts are returned as Ed25519-signed CartMandates (MandateMesh).",
-  "feed_url": "merchant_data/feed.json",
+  "feed_url": "https://kirana-one.example/feed.json",
   "cart_mandate_signing_alg": "Ed25519",
   "payment_rails": ["razorpay:payment_link"],
   "contact": "agents@kirana-one.example"
