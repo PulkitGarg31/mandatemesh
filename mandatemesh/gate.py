@@ -121,9 +121,9 @@ class PolicyGate:
         ok("R09_CART_NOT_EXPIRED", f"cart quote valid until {cart.expires_at}")
 
         computed = sum(i.qty * i.unit_price_paise for i in cart.items)
-        bad_lines = [i.sku for i in cart.items if i.qty < 1 or i.unit_price_paise < 0]
         if not cart.items:
             return fail("R10_CART_TOTAL_INTEGRITY", "cart has no lines")
+        bad_lines = [i.sku for i in cart.items if i.qty < 1 or i.unit_price_paise < 0]
         if bad_lines:
             return fail("R10_CART_TOTAL_INTEGRITY", f"non-positive quantity or negative price on {bad_lines}")
         if computed != cart.total_paise or cart.total_paise <= 0:

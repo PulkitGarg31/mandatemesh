@@ -1,3 +1,5 @@
+import pytest
+
 from mandatemesh.agent import ScriptedAgent
 from mandatemesh.executor import FakeExecutor
 from mandatemesh.fixtures import AGENT_ID, FIXED_NOW, MERCHANT_ID
@@ -183,3 +185,18 @@ def test_approver_sees_cart_and_decision_and_token_is_reused_on_retry(tmp_path):
     assert r.outcome == "paid"
     assert seen_args == [(180_000, "STEP_UP", "R14_PER_TXN_CAP")]
     assert [d.payload["verdict"] for d in ledger.of_type("gate.decision")] == ["STEP_UP", "ALLOW", "ALLOW"]
+
+
+class _PollInterrupts(FakeExecutor):
+    def poll(self, link_id, timeout_s, interval_s, seen):
+        raise KeyboardInterrupt
+
+
+def test_keyboard_interrupt_closes_the_link_then_propagates(tmp_path):
+    orch, sc, ex, ledger = build(tmp_path, "happy")
+    orch.executor = _PollInterrupts()
+    with pytest.raises(KeyboardInterrupt):
+        orch.run(sc)
+    t = [e.type for e in ledger.events()]
+    assert t[-2:] == ["payment.error", "razorpay.link.cancelled"]
+    assert orch.executor.cancelled

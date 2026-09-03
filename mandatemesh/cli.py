@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from mandatemesh.gate import Decision
 from mandatemesh.keys import ROLES, Keys
 from mandatemesh.ledger import Ledger, tamper
 from mandatemesh.merchant import MockMerchant
-from mandatemesh.orchestrator import SCENARIOS, Orchestrator, Scenario
+from mandatemesh.orchestrator import SCENARIOS, Orchestrator, Scenario, inr
 from mandatemesh.registry import AgentRegistry
 
 KEYS_DIR = Path("keys")
@@ -97,8 +98,12 @@ def cmd_demo(args: argparse.Namespace) -> int:
     console.print(sc.description, markup=False)
     keys = Keys.load(KEYS_DIR)
     agent = build_agent(args.agent, keys, sc)
+    if args.scenario == "poison" and args.executor == "real" and args.auto_approve == "yes":
+        raise SystemExit("refusing: poison with --auto-approve yes against the real executor would create an INR 30,000 link")
     executor = build_executor(args.executor)
     run_id = args.run_id or f"{sc.name}-{time.strftime('%Y%m%d-%H%M%S')}"
+    if Path(run_id).name != run_id or run_id in (".", ".."):
+        raise SystemExit("--run-id must be a plain directory name")
     ledger = Ledger(RUNS_DIR / run_id / "ledger.jsonl")
 
     def approver(cart, decision) -> bool:
@@ -109,7 +114,13 @@ def cmd_demo(args: argparse.Namespace) -> int:
         if args.auto_approve == "no":
             console.print("auto-approve: no")
             return False
-        return Confirm.ask(f"Approve INR {cart.total_paise / 100:,.2f} for cart {cart.cart_id}?", default=False)
+        if not sys.stdin.isatty():
+            console.print("stdin is not a terminal; declining step-up (pass --auto-approve yes|no)")
+            return False
+        try:
+            return Confirm.ask(f"Approve {inr(cart.total_paise)} for cart {cart.cart_id}?", default=False)
+        except EOFError:
+            return False
 
     orch = Orchestrator(
         keys, AgentRegistry(), MockMerchant(MERCHANT_ID, keys.merchant), agent, executor, ledger, approver,
@@ -130,7 +141,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
 def cmd_ledger(args: argparse.Namespace) -> int:
     path = Path(args.path)
-    if not path.exists():
+    if not path.is_file():
         console.print(f"[red]no ledger at {escape(str(path))}[/]")
         return 2
     if args.ledger_cmd == "verify":
@@ -196,4 +207,11 @@ def main(argv: list[str] | None = None) -> int:
     e.set_defaults(func=cmd_eval)
 
     args = p.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]interrupted[/]")
+        return 130
+    except (FileNotFoundError, KeyError, ValueError, PermissionError) as exc:
+        console.print(f"[red]error:[/] {escape(str(exc.args[0] if exc.args else exc))}")
+        return 2

@@ -222,6 +222,11 @@ class Orchestrator:
                         break
                     self.ledger.append("payment.retry", "gate", {**base, "next_attempt": attempt + 1})
                     self.say("[gate] retry authorized under the same mandate")
+        except KeyboardInterrupt:
+            self.ledger.append("payment.error", "executor", {**base, "attempt": attempts, "error": "KeyboardInterrupt"})
+            self.say("[razorpay] interrupted; closing the link")
+            self._close_link(base, seen, link)
+            raise
         except Exception as exc:  # polling broke: record it and close the link rather than leave it unobserved
             self.ledger.append("payment.error", "executor", {**base, "attempt": attempts, "error": f"{type(exc).__name__}: {exc}"})
             self.say(f"[razorpay] polling failed: {type(exc).__name__}: {exc}")

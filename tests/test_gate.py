@@ -248,7 +248,18 @@ def test_r16_token_for_other_intent_denies(w):
 
 
 def test_huge_total_fails_closed_without_raising(w):
-    intent, proposal, cart = happy_chain(w)
-    huge = resign_cart(w, cart, items=[{**cart.payload["items"][0], "qty": 1, "unit_price_paise": 10**400}], total_paise=10**400)
+    intent = make_intent(w)
+    proposal = make_proposal(w, intent, items=[ProposalItem("RICE5", 1)])
+    base = w.merchant.quote(proposal)
+    huge = resign_cart(w, base, items=[{**base.payload["items"][0], "unit_price_paise": 10**400}], total_paise=10**400)
     d = decide(w, intent, proposal, huge)
-    assert d.verdict == DENY
+    assert (d.verdict, d.rule_id) == (STEP_UP, "R14_PER_TXN_CAP")
+
+
+def test_r99_internal_error_is_a_deny_with_trail(w):
+    intent, proposal, cart = happy_chain(w)
+    gi = make_gate_input(w, intent, proposal, cart)
+    gi.merchant_pubs = None
+    d = w.gate.evaluate(gi)
+    assert (d.verdict, d.rule_id) == (DENY, "R99_GATE_ERROR")
+    assert [c.rule_id for c in d.checks][:1] == ["R00_WELL_FORMED"] and d.checks[-1].rule_id == "R99_GATE_ERROR"
