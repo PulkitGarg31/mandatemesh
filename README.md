@@ -233,7 +233,7 @@ Details: `docs/protocol-mapping.md`.
 - The prompt rule and the `<untrusted_catalog>` wrapper only reduce how often the model proposes a bad cart; the gate is the control and bounds whatever is proposed. The wrapper prevents structural escape, not persuasion.
 - Signatures are JWS-like envelopes, not W3C Verifiable Credentials; no key rotation, no revocation lists beyond the registry. Keys are plain files under `keys/` for the demo.
 - One mock merchant, one agent, one user, one process. The registry is in-memory and unsigned. All four keys are loaded by the one orchestrator process; production would separate them.
-- The LLM is interchangeable and untrusted by design: Gemini free tier (default, `gemini-3.8-flash`), local Ollama (`llama3.2`; `mistral` also works), or Groq (`openai/gpt-oss-120b`), all through the `openai` client (3.x). `LLMAgent` passes no `tool_choice` (Ollama's compatibility layer rejects it) and echoes Gemini thought signatures (`extra_content`) back on the assistant turn.
+- The LLM is interchangeable and untrusted by design: Gemini free tier (default, `gemini-3.8-flash`), NVIDIA NIM (`meta/llama-3.3-70b-instruct`, free developer credits), Groq (`openai/gpt-oss-120b`), or local Ollama (`llama3.2` or `mistral`; CPU-only runs are slow and small models often fail closed with an empty or missing proposal, so raise `LLM_TIMEOUT_S`), all through the `openai` client (3.x). `LLMAgent` passes no `tool_choice` (Ollama's compatibility layer rejects it) and echoes Gemini thought signatures (`extra_content`) back on the assistant turn.
 
 ## Future work
 
