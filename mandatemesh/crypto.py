@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,8 +84,12 @@ def verify(env: Envelope, pub_b64: str) -> bool:
 
 
 def save_private_key(key: Ed25519PrivateKey, path: Path) -> None:
+    """Write the key owner-only (0600). Windows has no POSIX modes and ignores the bits; the write itself is unchanged."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(b64u(key.private_bytes_raw()), encoding="utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(b64u(key.private_bytes_raw()))
+    os.chmod(path, 0o600)  # O_CREAT leaves an existing file's mode alone, so tighten it explicitly
 
 
 def load_private_key(path: Path) -> Ed25519PrivateKey:

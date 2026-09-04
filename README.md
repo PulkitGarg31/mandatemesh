@@ -26,7 +26,7 @@ Track 01 asks: *"Every money action explainable, bounded and gated. Show the aud
 ## Quickstart (5 commands)
 
 ```powershell
-git clone https://github.com/<your-username>/mandatemesh; cd mandatemesh
+git clone https://github.com/PulkitGarg31/mandatemesh; cd mandatemesh
 python -m pip install -r requirements.txt
 copy .env.example .env            # fill RAZORPAY_KEY_ID / _SECRET (rzp_test_ keys) and the LLM_* block
 python -m mandatemesh keys init   # user, agent, merchant, gate, planner Ed25519 keys into ./keys (gitignored)
@@ -38,7 +38,7 @@ Tested with Python 3.14.7, razorpay 2.0.1, openai 3.7.0, rich 15.0.0 and cryptog
 Everything below the first line also runs offline (`--agent scripted --executor fake`; no `.env` needed):
 
 ```powershell
-python -m pytest -q                                                              # 198 offline tests
+python -m pytest -q                                                              # 200 offline tests
 python -m mandatemesh eval                                                       # 11 poisoned + 6 benign cases
 python -m mandatemesh demo --scenario stepup --agent scripted --executor fake    # answer the [y/N] prompt, or --auto-approve yes|no
 python -m mandatemesh demo --scenario revoke --agent scripted --executor fake
@@ -114,7 +114,7 @@ Paths that are not scenarios but are handled and tested:
 | Link creation fails | Nothing was created; the run stops with `error` (exit 1) | `razorpay.link.failed` |
 | Polling fails | The error is recorded, the link is closed, outcome `error` | `payment.error`, then `razorpay.link.cancelled` |
 | Cancel fails (typically because the customer paid at that moment) | One final poll: a late capture is recorded as paid; otherwise the failure is recorded honestly. `razorpay.link.cancelled` is written only when Razorpay confirmed the cancel | `payment.captured`, or `razorpay.link.cancel_failed` |
-| Model never proposes, or the provider errors | The agent fails closed and never invents a cart | `agent.no_proposal`, outcome `no_proposal` |
+| Model never proposes, or the provider errors | The agent fails closed and never invents a cart; the recorded reason has the LLM API key redacted, in case a provider echoes the request back | `agent.no_proposal`, outcome `no_proposal` |
 | Merchant refuses to quote (unknown SKU, out of stock, bad quantity, malformed proposal), or the signed cart fails strict parsing | Recorded; nothing evaluated, nothing created. The feed itself is validated when the merchant loads it (five required keys, integer non-negative `price_paise`), so a hand-edited `feed.json` fails at start-up with a `MerchantError` rather than mid-run | `merchant.quote.rejected`, outcome `quote_rejected` |
 | Merchant's own shortfall check refuses the claim (empty, an SKU not on the cart, `qty_short` outside the cart line) | Recorded; the gate is never asked and nothing is refunded. The run still counts as paid | `merchant.shortfall.rejected` |
 | The refund call fails at Razorpay | Recorded; no money moved back, the capture stands, and nothing is invented | `refund.failed` |
@@ -325,7 +325,7 @@ Details: `docs/protocol-mapping.md`.
 - `ledger replay` can only re-decide decisions whose inputs are in the ledger. The orchestrator writes them (`now`, prior spend, per-link spend, chain ids, step-up id, captured and refunded amounts, and the public keys on the events that introduce them), but a hostile or buggy writer could omit them; replay then reports that decision as unreplayable and exits 2 rather than counting it as a pass. Replay checks the gate's reasoning, not whether the recorded inputs were the true ones: it recomputes each decision from the inputs the ledger recorded next to it, so a recorded spend figure that never matched the capture events still replays cleanly. Cross-checking those recorded figures against the capture events is a separate manual step that replay does not perform.
 - Delegation is verified, not enrolled: sub-mandates are signed by agent keys that the same in-process registry vouches for, so the registry (and whoever seeds it) is still the root of trust for every link in the chain.
 - The prompt rule and the `<untrusted_catalog>` wrapper only reduce how often the model proposes a bad cart; the gate is the control and bounds whatever is proposed. The wrapper prevents structural escape, not persuasion.
-- Signatures are JWS-like envelopes, not W3C Verifiable Credentials; no key rotation, no revocation lists beyond the registry. Keys are plain files under `keys/` for the demo.
+- Signatures are JWS-like envelopes, not W3C Verifiable Credentials; no key rotation, no revocation lists beyond the registry. Keys are plain files under `keys/` for the demo, written owner-only (`0600`) where the OS has file modes.
 - One mock merchant, one agent, one user, one planner, one process. The registry is in-memory and unsigned. All five keys are loaded by the one orchestrator process; production would separate them.
 - The LLM is interchangeable and untrusted by design: Gemini free tier (default, `gemini-3.8-flash`), NVIDIA NIM (`nvidia/nemotron-3-super-120b-a12b`, free developer credits), Groq (`openai/gpt-oss-120b`), or local Ollama (`llama3.2` or `mistral`; CPU-only runs are slow and small models often fail closed with an empty or missing proposal, so raise `LLM_TIMEOUT_S`), all through the `openai` client (3.x). `LLMAgent` passes no `tool_choice` (Ollama's compatibility layer rejects it) and echoes Gemini thought signatures (`extra_content`) back on the assistant turn.
 
@@ -336,7 +336,7 @@ Multiple merchants under one mandate with Razorpay Route split settlement; webho
 ## Repo map
 
 - `mandatemesh/` the package. `gate.py` is the thesis (purchase rules, delegation rules and refund rules); `crypto.py` envelopes; `mandates.py` strict data; `registry.py`; `merchant.py`; `ledger.py` (hash chain, receipts, offline replay); `executor.py` (only `razorpay` importer); `agent.py` (only `openai` importer); `orchestrator.py` scenarios and failure handling; `fixtures.py` shared builders for tests and eval; `evalset.py`; `cli.py`.
-- `tests/` 198 offline tests (scripted agent, fake executor, fixed clock).
+- `tests/` 200 offline tests (scripted agent, fake executor, fixed clock).
 - `merchant_data/` the feed (10 items: one poisoned description, one off-category, one out of stock) and the `.well-known` manifest.
 - `scripts/smoke_razorpay.py` one-time test-mode check of how failed attempts surface.
 - `docs/` architecture, threat model, decisions, protocol mapping, build log, form answers. `docs/design-spec.md` and `docs/build-plan.md` hold the design spec and the amended implementation plan (process evidence: each amendment records what a review found and what changed).

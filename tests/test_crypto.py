@@ -1,4 +1,6 @@
 import json
+import os
+import stat
 
 import pytest
 
@@ -54,6 +56,18 @@ def test_key_file_round_trip(tmp_path):
     key = generate_private_key()
     save_private_key(key, tmp_path / "sub" / "k.key")
     assert public_b64(load_private_key(tmp_path / "sub" / "k.key")) == public_b64(key)
+
+
+def test_key_file_is_rewritten_owner_only(tmp_path):
+    key = generate_private_key()
+    path = tmp_path / "k.key"
+    path.write_text("stale key material that is longer than the new one", encoding="utf-8")
+    if os.name != "nt":
+        path.chmod(0o644)
+    save_private_key(key, path)
+    assert public_b64(load_private_key(path)) == public_b64(key)  # an existing file is replaced, not appended to
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600  # and tightened to owner-only, even if it was looser before
 
 
 def test_signer_is_bound_into_signature():

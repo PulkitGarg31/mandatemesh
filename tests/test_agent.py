@@ -58,8 +58,8 @@ class _Resp:
         self.choices = [_Choice(msg)]
 
 
-def make_llm_agent(w, script):
-    agent = LLMAgent(AGENT_ID, w.keys.agent, base_url="http://localhost:1/v1", api_key="x", model="stub", clock=lambda: w.now)
+def make_llm_agent(w, script, api_key="x"):
+    agent = LLMAgent(AGENT_ID, w.keys.agent, base_url="http://localhost:1/v1", api_key=api_key, model="stub", clock=lambda: w.now)
     calls = []
 
     def create(**kwargs):
@@ -114,6 +114,15 @@ def test_llm_agent_fails_closed_on_provider_error():
     agent, _ = make_llm_agent(w, [RuntimeError("429 rate limited")])
     assert agent.propose(intent_obj(w), w.merchant, "buy") is None
     assert "RuntimeError" in agent.last_error and "429" in agent.last_error
+
+
+def test_llm_agent_redacts_the_api_key_from_provider_errors():
+    w = make_world()
+    secret = "nvapi-SECRET-1234567890"
+    agent, _ = make_llm_agent(w, [RuntimeError(f"401 Unauthorized: key {secret} was rejected")], api_key=secret)
+    assert agent.propose(intent_obj(w), w.merchant, "buy") is None
+    assert secret not in agent.last_error  # last_error is what the ledger records as agent.no_proposal.reason
+    assert "RuntimeError" in agent.last_error and "<redacted>" in agent.last_error and "401" in agent.last_error
 
 
 def test_llm_agent_fails_closed_on_malformed_cart_arguments():

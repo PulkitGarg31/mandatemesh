@@ -122,6 +122,7 @@ class LLMAgent:
         self.agent_id = agent_id
         self._key = private_key
         self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout_s, max_retries=1)
+        self._api_key = api_key
         self.model = model
         self.max_turns = max_turns
         self._clock = clock or (lambda: int(time.time()))
@@ -170,5 +171,13 @@ class LLMAgent:
                     messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.function.name, "content": result})
             self.last_error = f"no propose_cart call within {self.max_turns} turns"
         except Exception as exc:  # provider/network/parse errors: fail closed, never invent a cart
-            self.last_error = f"{type(exc).__name__}: {exc}"
+            self.last_error = self._redact(f"{type(exc).__name__}: {exc}")
         return None
+
+    def _redact(self, text: str) -> str:
+        """last_error is recorded in the ledger. A provider that echoes the request must not put the key there.
+
+        Placeholder keys shorter than 8 characters (Ollama's "ollama", a test's "x") are not secrets and are left alone,
+        since blanking a one-letter key would mangle every word containing it.
+        """
+        return text.replace(self._api_key, "<redacted>") if len(self._api_key) >= 8 else text
