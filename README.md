@@ -6,6 +6,8 @@
 
 **Delegation-safe money for agents:** a mandate can only shrink when an agent hands it on, every money action is gated including the refund, and the whole audit trail replays offline from the ledger alone.
 
+**Demo video (5 min):** https://youtu.be/5oTLv3iOoYc
+
 Razorpay AI Buildathon 2026 · Track 01: AI Growth & Agentic Commerce · Python · zero-cost stack
 
 ## The bar, and how this meets it
